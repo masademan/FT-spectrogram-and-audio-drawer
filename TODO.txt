@@ -1,0 +1,39 @@
+FIX NOW:
+making a drawing in the amplitude matrix and phase matrix, and exporting doesn't actually save the phase data
+    when reimporting the audio file and looking at the phase data, it doesn't show the data properly, it looks like some of the amplitude data has leaked into the phase data, and vice versa
+
+DrawingProgram TODO:
+write the coordinates of the mouse on the canvas in the bottom right corner of the window, and in relation to the time and frequency
+a layered pencil, similar to the non-additive, but even when letting go, it doesn't add to what it drew unless you click a button that says "new layer", ie, clearing the drawn_pixels set
+an option to make the circle and square tool fill rather than just the outline, with a checkbox for example
+be able to select pixels and then shift them, along the time, frequency, or both axes, and if the data gets cutoff, just don't play or export it
+allow for different layers, with a menu and checkboxs for enabling or disabling different layers
+msg text in the far right bottom to display text instead of printing to console
+make the wacom tablet work with the canvas better
+
+SpectrogramSynthesizer TODO:
+option to hear the overlay as well as what's drawn on the canvas in the synthesized and saved audio
+button to reverse the spectrogram canvas, and another button for the overlay (reversing across time)
+the option to see a plot of amplitude along the time axis or frequency axis, like in sebastian lague's video (https://youtu.be/rRnOtKlg4jA?t=1733), maybe with a button to enable/disable it, and then a draggable triangle on the right part of the screen
+    then the entire screen gets a black overlay of alpha ~0.5 and a white line representing a plot of the normalized amplitude over time of the frequency selected with the draggable triangle
+    there should also be a small part of a solid green line on the left of the screen
+    a faint green line connecting the solid green lines and the triangle should be visible while dragging the triangle, and otherwise disappear to prevent the plot from being covered
+    this is to help show which frequency is being plotted, especially with the frequency axis label
+    while the draggable triangle is being dragged, make the plot update as the frequencies are being scrubbed through
+    additionally, there should be some text over the top of the canvas to the left that shows the peak normalized amplitude in that frequency
+multi-threading or parallelization for the audio synthesis when exporting to make the compute time less
+add the option to isolate the audio from a slice of the matrix, like in sebastian lague's video (https://youtu.be/rRnOtKlg4jA?t=1098), like a button that makes the mouse able to select a portion rather than drawing, and then a button to clear the selection
+    when a selection is made, other parts of the visuals should be blacked out, or the equivalent of 0 amplitude in the chosen color map, and when the selection is cleared, the entire audio should be fully visible
+    also, add a button that says "add" or something like it, and make it so that the entire audio signal appears again, but with an opacity of ~0.5, this is so that the user can select another section of the audio to play
+    the already selected audio pieces should stay at full opacity
+    a button that says "remove" or something like it would be useful, clicking it would let you click on one of the selection rectangles to remove it from the heard audio
+quality control, from default to worse
+add control to how long the recording is, ie, allow for trimming or extending. and trimming doesn't actually delete the data, just stop showing part of the data in the UI and cuts the audio replay short, but once you export, the data actually gets trimmed
+add a drop down and list for notes and note lines on the spectrogram
+make the audio synthesis and file uploading work with noverlap values that aren't NFFT // 2
+
+General TODO:
+rename "fft_utils.py" to "signal_processing.py", and "gui_utils.py" to "synthesizer_daw.py"
+stylize the program, ie:
+move the tools to the right part of the screen and the canvas toward the left part
+add a color palette like a dark mode and light mode, and a button to switch between them or a drop down to select one

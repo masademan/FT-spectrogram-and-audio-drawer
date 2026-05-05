@@ -6,8 +6,8 @@ import pandas as pd
 import sounddevice as sd
 from scipy.io import wavfile
 import matplotlib.pyplot as plt
-from collections.abc import Callable
 from matplotlib.colors import Colormap
+from collections.abc import Callable, Iterator
 from utils import (
     get_color_map,
     is_power_of_two,
@@ -275,12 +275,14 @@ class AudioSignal:
         """
         if not use_absolute_path:
             audio_file_type = audio_file.split(".")[-1]
-            if audio_file_type not in ["mp3", "wav"]:
-                audio_file_path = os.path.join("Data", "MP3 or WAV", "WAV", audio_file + ".wav")
+            if audio_file_type not in ["mp3", "wav", "ogg"]:
+                audio_file_path = os.path.join("Data", "MP3 or WAV or OGG", "WAV", audio_file + ".wav")
                 if not os.path.exists(audio_file_path):
-                    audio_file_path = os.path.join("Data", "MP3 or WAV", "MP3", audio_file + ".mp3")
+                    audio_file_path = os.path.join("Data", "MP3 or WAV or OGG", "MP3", audio_file + ".mp3")
+                if not os.path.exists(audio_file_path):
+                    audio_file_path = os.path.join("Data", "MP3 or WAV or OGG", "OGG", audio_file + ".ogg")
             else:
-                audio_file_path = os.path.join("Data", "MP3 or WAV", "WAV" if audio_file_type == "wav" else "MP3", audio_file)
+                audio_file_path = os.path.join("Data", "MP3 or WAV or OGG", audio_file_type.upper(), audio_file)
         else:
             audio_file_path = audio_file
 
@@ -434,12 +436,8 @@ class AudioSignal:
             combined_amplitudes[start_idx:end_idx] += chunk_wave
             window_sum[start_idx:end_idx] += window_squared
         
-        window_sum[window_sum == 0] = 1
+        window_sum[window_sum < 1e-10] = 1.0
         combined_amplitudes /= window_sum
-
-        max_amp = np.max(np.abs(combined_amplitudes))
-        if max_amp > 0:
-            combined_amplitudes /= max_amp
 
         output_time = np.arange(total_samples) / true_sr
         
@@ -450,6 +448,93 @@ class AudioSignal:
 
         return cls(audio_df)
     
+    @classmethod
+    def stream_from_ft_data(cls, ft_data: dict[str, np.ndarray | float | int | bool] | FourierTransformData, sample_rate: float = 2000, mode: int = 0, columns_per_chunk: int = 10) -> Iterator[np.ndarray]:
+        """
+        A Generator version of from_ft_data that yields safe, fully-overlapped audio chunks dynamically as it synthesizes
+
+        Args:
+            ft_data (dict[str, numpy.ndarray | float | int | bool] | FourierTransformData): The output from a Fourier Transform function
+            sample_rate (float): The sample_rate to use if the Fourier Transform data doesn't contain it, will change the length and quality of the reconstructed audio
+            mode (int): 0 is the default where a perfect reconstruction is attempted, 1 is a robotic mode where the phase information is removed, 2 is a crunchy mode where the phase information is randomized
+            columns_per_chunk (int): 
+        Returns:
+            Iterator[numpy.ndarray]: An iterator to stream Fourier Transform data and create a time vs amplitude structure
+        """
+        if isinstance(ft_data, FourierTransformData):
+            ft_data = ft_data.to_ft_dict()
+
+        time_starts = ft_data["times"]
+        freqs = ft_data["freqs"]
+        amp_matrix = ft_data["amp_matrix"].T
+        phase_matrix = ft_data["phase_matrix"].T
+        true_sr = ft_data.get("sample_rate", sample_rate)
+
+        NFFT = (len(freqs) - 1) * 2 + len(freqs) % 2
+        noverlap = NFFT - round(true_sr * (time_starts[1] - time_starts[0]))
+
+        true_NFFT = ft_data.get("NFFT", NFFT)
+        true_noverlap = ft_data.get("noverlap", noverlap)
+        
+        step = true_NFFT - true_noverlap
+        total_samples = (len(time_starts) - 1) * step + true_NFFT
+        
+        combined_amplitudes = np.zeros(total_samples)
+        window_sum = np.zeros(total_samples)
+
+        use_hanning = ft_data.get("useHanning", False)
+        synthesis_window = np.hanning(true_NFFT) if use_hanning else np.ones(true_NFFT)
+        window_squared = synthesis_window ** 2 if use_hanning else np.ones(true_NFFT)
+
+        last_yielded_sample = 0
+
+        for time_idx in range(len(time_starts)):
+            current_amps = amp_matrix[time_idx]
+            if mode == 0:
+                current_phases = phase_matrix[time_idx]
+            elif mode == 1:
+                current_phases = np.zeros(len(current_amps))
+            elif mode == 2:
+                current_phases = np.random.uniform(-np.pi, np.pi, size=len(current_amps))
+                
+            local_time = np.arange(true_NFFT) / true_sr
+            chunk_wave = np.zeros(true_NFFT)
+
+            for freq_idx in range(len(freqs)):
+                wave = current_amps[freq_idx] * np.cos(2 * np.pi * freqs[freq_idx] * local_time + current_phases[freq_idx])
+                chunk_wave += wave
+            
+            chunk_wave /= true_NFFT
+            chunk_wave *= synthesis_window
+        
+            start_idx = time_idx * step
+            end_idx = start_idx + true_NFFT
+
+            combined_amplitudes[start_idx:end_idx] += chunk_wave
+            window_sum[start_idx:end_idx] += window_squared
+            
+            # --- YIELD CHUNKS SAFELY ---
+            if time_idx > 0 and time_idx % columns_per_chunk == 0:
+                safe_sample = time_idx * step
+                
+                safe_window = window_sum[last_yielded_sample:safe_sample].copy()
+
+                safe_window[safe_window < 1e-10] = 1.0
+
+                safe_audio = combined_amplitudes[last_yielded_sample:safe_sample] / safe_window
+                
+                yield safe_audio
+                last_yielded_sample = safe_sample
+                
+        # --- YIELD FINAL TAIL ---
+        safe_window = window_sum[last_yielded_sample:].copy()
+
+        safe_window[safe_window < 1e-10] = 1.0
+
+        safe_audio = combined_amplitudes[last_yielded_sample:] / safe_window
+        
+        yield safe_audio
+
     def to_audio_file(self, output_name: str, use_absolute_path: bool = False) -> None:
         """
         Exports the time vs amplitude in the AudioSignal as a .wav file in the directory 'Data/MP3 or WAV/WAV'
@@ -536,7 +621,7 @@ class AudioSignal:
 
         amps = np.pad(amplitude, (0, num_zeros))
 
-        time_arr = np.arange(len(amplitude)) / sample_rate
+        time_arr = np.arange(len(amps)) / sample_rate
 
         self.time_vs_amplitude = pd.DataFrame({
             "Time": time_arr,
@@ -553,6 +638,15 @@ class AudioSignal:
         self.time_vs_amplitude["Time"] /= speed_factor
         self.time_vs_amplitude["Time"] -= self.time_vs_amplitude["Time"].min()
         self.time_vs_amplitude = self.time_vs_amplitude.sort_values(by="Time")
+
+    def apply_volume_change(self, volume_factor: float = 1) -> None:
+        """
+        Changes the volume of the saved audio data by volume_factor
+
+        Args:
+            volume_factor (float): The volume factor to multiply the saved amplitudes by
+        """
+        self.time_vs_amplitude["Amplitude"] *= volume_factor
 
     def reverse_audio(self) -> None:
         """
