@@ -774,7 +774,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
 
         self.canvas_sample_rate = 44100
         self.canvas_duration_seconds = 5.0
-        self.original_max_val = float((self.height - 1) * 2)
+        self.original_max_val = float(self.height - 1)
         
         # --- DAW TOOLBAR ---
         self.daw_frame = tk.Frame(root)
@@ -928,6 +928,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             # Give the thread 0.2s to generate the first few chunks before we chase it with playback!
             self.root.after(200, lambda: self.start_playback_stream(playback_sample_rate))
         else:
+            if DEBUG: print("Reading cached synthesized audio...")
             self.start_playback_stream(playback_sample_rate)
 
     def pause_audio(self):
@@ -1000,21 +1001,12 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
     def audio_callback(self, outdata, frames, time_info, status):
         """Pulls audio dynamically from the background thread and feeds the speaker hardware."""
         valid_frames = min(frames, self.cached_samples_ready - self.playback_index)
-        
         if valid_frames > 0:
             audio_chunk = self.cached_base_audio[self.playback_index : self.playback_index + valid_frames]
             
-            # --- Industry Standard Soft-Clipping (tanh) ---
-            # Smoothly boosts volume for phase edits, and guarantees zero scratchy hard-clipping!
-            safe_audio = np.tanh(audio_chunk * AUDIO_PREGAIN_MULTIPLIER) 
+            outdata[:valid_frames, 0] = np.clip(audio_chunk * self.volume_slider.get(), -1.0, 1.0)
             
-            # Apply volume
-            outdata[:valid_frames, 0] = safe_audio * self.volume_slider.get()
-            
-            # Fill the rest with silence if we hit the boundary
-            if valid_frames < frames:
-                outdata[valid_frames:, 0] = 0
-                
+            if valid_frames < frames: outdata[valid_frames:, 0] = 0
             self.playback_index += valid_frames
         else:
             outdata.fill(0)
@@ -1069,12 +1061,12 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
 
         size = 8
         self.playhead_triangle_id = self.canvas.create_polygon(
-            ui_x_pos - size, 0, ui_x_pos + size, 0, ui_x_pos, size + 5,
+            round(ui_x_pos) - size, 0, round(ui_x_pos) + size, 0, round(ui_x_pos), size + 5,
             fill="yellow", outline="black"
         )
         if self.show_playhead_line.get():
             self.playhead_line_id = self.canvas.create_line(
-                ui_x_pos, size + 5, ui_x_pos, self.ui_height,
+                round(ui_x_pos), size + 5, round(ui_x_pos), round(self.ui_height),
                 fill="yellow", dash=(4, 4)
             )
 
@@ -1180,6 +1172,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.render_matrix_to_image()
 
     def start_stroke(self, event):
+        if self.undo_redo_counter < 0: self.undo_redo_counter = 0
         self.undo_redo_counter += 1
         self.stop_audio()
         super().start_stroke(event)
@@ -1242,6 +1235,18 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
                 
             audio_matrix = self.pristine_amp_matrix + high_def_delta
             audio_matrix = np.clip(audio_matrix, 0.0, 1.0)
+            
+            # Delta-mapping residue prevents pure silence. We must hard-gate the erased pixels!
+            if self.amp_matrix.shape[1] != required_width:
+                pil_mask = Image.fromarray((self.amp_matrix == 0).astype(np.float32), mode="F")
+                pil_mask = pil_mask.resize((required_width, self.height), Image.Resampling.NEAREST)
+                hd_zero_mask = np.array(pil_mask) > 0.5
+            else:
+                hd_zero_mask = (self.amp_matrix == 0)
+                
+            audio_matrix[hd_zero_mask] = 0.0
+            # --------------------------------------
+            
             audio_matrix = np.flipud(audio_matrix)
         else:
             audio_matrix = np.flipud(self.amp_matrix)
@@ -1329,9 +1334,13 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         
         if ext == "wav":
             signal = ft_data.to_AudioSignal()
-            # --- Soft-clip to perfectly match the DAW playback! ---
-            signal.time_vs_amplitude["Amplitude"] = np.tanh(signal.time_vs_amplitude["Amplitude"].values * AUDIO_PREGAIN_MULTIPLIER)
             signal.apply_volume_change(self.volume_slider.get())
+            
+            # --- FIX: Gentle Peak Limiter to prevent clipping ---
+            max_amp = np.max(np.abs(signal.time_vs_amplitude["Amplitude"].values))
+            if max_amp > 1.0:
+                signal.time_vs_amplitude["Amplitude"] /= max_amp
+                
             signal.to_audio_file(filepath, use_absolute_path=True)
             
         elif ext == "npz":
@@ -1340,9 +1349,12 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             
         elif ext == "csv":
             signal = ft_data.to_AudioSignal()
-            # --- Soft-clip to perfectly match the DAW playback! ---
-            signal.time_vs_amplitude["Amplitude"] = np.tanh(signal.time_vs_amplitude["Amplitude"].values * AUDIO_PREGAIN_MULTIPLIER)
             signal.apply_volume_change(self.volume_slider.get())
+            
+            max_amp = np.max(np.abs(signal.time_vs_amplitude["Amplitude"].values))
+            if max_amp > 1.0:
+                signal.time_vs_amplitude["Amplitude"] /= max_amp
+                
             signal.to_csv_file(filepath, use_absolute_path=True)
             
         mb.showinfo("Saved", f"Data saved successfully to {filepath}")
@@ -1394,7 +1406,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
                 
                 final_amp_matrix = np.array(img).astype(float) / 255.0
                 imported_amp = final_amp_matrix.copy()
-                self.original_max_val = float(NFFT)
+                self.original_max_val = float(NFFT / 2)
                 
                 # PNGs don't have audio waves, so manually generate a scaled random phase!
                 if getattr(self, "random_phase_matrix", None) is not None:

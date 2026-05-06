@@ -395,17 +395,9 @@ class AudioSignal:
         true_noverlap = ft_data.get("noverlap", noverlap)
         
         step = true_NFFT - true_noverlap
-        total_samples = (len(time_starts) - 1) * step + true_NFFT
+        total_samples = int((len(time_starts) - 1) * step + true_NFFT)
         
         combined_amplitudes = np.zeros(total_samples)
-        window_sum = np.zeros(total_samples)
-
-        # --- THE WOLA FIX: Define the synthesis window ---
-        use_hanning = ft_data.get("useHanning", False)
-        synthesis_window = np.hanning(true_NFFT) if use_hanning else np.ones(true_NFFT)
-        
-        # We must square the window to perfectly normalize the overlap later!
-        window_squared = synthesis_window ** 2
 
         for time_idx in range(len(time_starts)):
             current_amps = amp_matrix[time_idx]
@@ -415,29 +407,20 @@ class AudioSignal:
                 current_phases = np.zeros(len(current_amps))
             elif mode == 2:
                 current_phases = np.random.uniform(-np.pi, np.pi, size=len(current_amps))
+                
             local_time = np.arange(true_NFFT) / true_sr
             chunk_wave = np.zeros(true_NFFT)
 
             for freq_idx in range(len(freqs)):
                 wave = current_amps[freq_idx] * np.cos(2 * np.pi * freqs[freq_idx] * local_time + current_phases[freq_idx])
-
-                # if freq_idx != 0 and freq_idx != len(freqs) - 1:
-                #     wave *= 2
-
                 chunk_wave += wave
             
             chunk_wave /= true_NFFT
-
-            chunk_wave *= synthesis_window
         
-            start_idx = time_idx * step
+            start_idx = int(time_idx * step)
             end_idx = start_idx + true_NFFT
 
             combined_amplitudes[start_idx:end_idx] += chunk_wave
-            window_sum[start_idx:end_idx] += window_squared
-        
-        window_sum[window_sum < 1e-10] = 1.0
-        combined_amplitudes /= window_sum
 
         output_time = np.arange(total_samples) / true_sr
         
@@ -477,15 +460,9 @@ class AudioSignal:
         true_noverlap = ft_data.get("noverlap", noverlap)
         
         step = true_NFFT - true_noverlap
-        total_samples = (len(time_starts) - 1) * step + true_NFFT
+        total_samples = int((len(time_starts) - 1) * step + true_NFFT)
         
         combined_amplitudes = np.zeros(total_samples)
-        window_sum = np.zeros(total_samples)
-
-        use_hanning = ft_data.get("useHanning", False)
-        synthesis_window = np.hanning(true_NFFT) if use_hanning else np.ones(true_NFFT)
-        window_squared = synthesis_window ** 2 if use_hanning else np.ones(true_NFFT)
-
         last_yielded_sample = 0
 
         for time_idx in range(len(time_starts)):
@@ -505,34 +482,19 @@ class AudioSignal:
                 chunk_wave += wave
             
             chunk_wave /= true_NFFT
-            chunk_wave *= synthesis_window
         
-            start_idx = time_idx * step
+            start_idx = int(time_idx * step)
             end_idx = start_idx + true_NFFT
 
             combined_amplitudes[start_idx:end_idx] += chunk_wave
-            window_sum[start_idx:end_idx] += window_squared
             
-            # --- YIELD CHUNKS SAFELY ---
             if time_idx > 0 and time_idx % columns_per_chunk == 0:
-                safe_sample = time_idx * step
-                
-                safe_window = window_sum[last_yielded_sample:safe_sample].copy()
-
-                safe_window[safe_window < 1e-10] = 1.0
-
-                safe_audio = combined_amplitudes[last_yielded_sample:safe_sample] / safe_window
-                
+                safe_sample = int(time_idx * step)
+                safe_audio = combined_amplitudes[last_yielded_sample:safe_sample]
                 yield safe_audio
                 last_yielded_sample = safe_sample
                 
-        # --- YIELD FINAL TAIL ---
-        safe_window = window_sum[last_yielded_sample:].copy()
-
-        safe_window[safe_window < 1e-10] = 1.0
-
-        safe_audio = combined_amplitudes[last_yielded_sample:] / safe_window
-        
+        safe_audio = combined_amplitudes[last_yielded_sample:]
         yield safe_audio
 
     def to_audio_file(self, output_name: str, use_absolute_path: bool = False) -> None:

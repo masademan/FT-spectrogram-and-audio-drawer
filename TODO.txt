@@ -1,6 +1,5 @@
 FIX NOW:
-making a drawing in the amplitude matrix and phase matrix, and exporting doesn't actually save the phase data
-    when reimporting the audio file and looking at the phase data, it doesn't show the data properly, it looks like some of the amplitude data has leaked into the phase data, and vice versa
+N/A
 
 DrawingProgram TODO:
 write the coordinates of the mouse on the canvas in the bottom right corner of the window, and in relation to the time and frequency
@@ -12,6 +11,7 @@ msg text in the far right bottom to display text instead of printing to console
 make the wacom tablet work with the canvas better
 
 SpectrogramSynthesizer TODO:
+reset button for volume and speed
 option to hear the overlay as well as what's drawn on the canvas in the synthesized and saved audio
 button to reverse the spectrogram canvas, and another button for the overlay (reversing across time)
 the option to see a plot of amplitude along the time axis or frequency axis, like in sebastian lague's video (https://youtu.be/rRnOtKlg4jA?t=1733), maybe with a button to enable/disable it, and then a draggable triangle on the right part of the screen
