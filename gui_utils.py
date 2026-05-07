@@ -45,24 +45,36 @@ class AudioDrawingProgram:
         self.view_mode = tk.StringVar(value="Amplitude")
         self.phase_is_edited = False
         
-        # --- NEW WORKSPACE WITH AXES ---
-        self.workspace_frame = tk.Frame(root)
-        self.workspace_frame.pack(pady=10)
+        # --- NEW L-SHAPED MASTER LAYOUT ---
+        self.master_frame = tk.Frame(root)
+        self.master_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        # TOP HALF: Canvas (Left) + Drawing Tools (Right)
+        self.top_pane = tk.Frame(self.master_frame)
+        self.top_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        # 1. CANVAS WORKSPACE (Left)
+        self.canvas_pane = tk.Frame(self.top_pane)
+        self.canvas_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self.workspace_frame = tk.Frame(self.canvas_pane)
+        self.workspace_frame.pack(pady=10, anchor=tk.N)
         
-        # Y-Axis (Frequencies)
+        # Y-Axis (Uses UI height)
         self.y_axis_canvas = tk.Canvas(self.workspace_frame, width=80, height=self.ui_height, bg=root.cget("bg"), highlightthickness=0)
         self.y_axis_canvas.grid(row=0, column=0, sticky="ns")
         
-        # Main Drawing Board
+        # Main Drawing Board (Uses UI dimensions)
         self.canvas = tk.Canvas(self.workspace_frame, width=self.ui_width, height=self.ui_height, bg="black", cursor="crosshair")
         self.canvas.grid(row=0, column=1)
         
-        # X-Axis (Time)
+        # X-Axis (Uses UI width)
         self.x_axis_canvas = tk.Canvas(self.workspace_frame, width=self.ui_width, height=30, bg=root.cget("bg"), highlightthickness=0)
         self.x_axis_canvas.grid(row=1, column=1, sticky="ew")
-        
-        self.tk_image = None 
-        self.canvas_image_id = self.canvas.create_image(0, 0, anchor=tk.NW)
+
+        # 2. DRAWING TOOLS SIDEBAR (Right)
+        self.drawing_tools_pane = tk.Frame(self.top_pane)
+        self.drawing_tools_pane.pack(side=tk.RIGHT, fill=tk.Y, padx=10)
         
         # --- PAN & ZOOM STATE VARIABLES ---
         self.zoom = 1.0
@@ -74,13 +86,9 @@ class AudioDrawingProgram:
         self.tk_image = None 
         self.canvas_image_id = self.canvas.create_image(0, 0, anchor=tk.NW)
         
-        # --- NEW UI TOOLBAR ---
-        self.btn_frame = tk.Frame(root)
-        self.btn_frame.pack(pady=5, fill=tk.X, padx=10)
-        
         # 1. BRUSH & OPACITY FRAME
-        self.brush_frame = tk.LabelFrame(self.btn_frame, text="Brush & Opacity")
-        self.brush_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        self.brush_frame = tk.LabelFrame(self.drawing_tools_pane, text="Brush & Opacity")
+        self.brush_frame.pack(side=tk.TOP, pady=5, fill=tk.X)
         
         self.opacity_slider = tk.Scale(self.brush_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL, length=120)
         self.opacity_slider.set(0.5) 
@@ -106,8 +114,8 @@ class AudioDrawingProgram:
         tk.Checkbutton(self.brush_frame, text="Show Brush While Drawing", variable=self.show_brush_while_drawing).pack(side=tk.TOP)
 
         # 2. VIEW & GRID FRAME
-        self.view_frame = tk.LabelFrame(self.btn_frame, text="View & Grid")
-        self.view_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        self.view_frame = tk.LabelFrame(self.drawing_tools_pane, text="View & Grid")
+        self.view_frame.pack(side=tk.TOP, pady=5, fill=tk.X)
         
         view_top_frame = tk.Frame(self.view_frame)
         view_top_frame.pack(side=tk.TOP, fill=tk.X)
@@ -133,8 +141,8 @@ class AudioDrawingProgram:
         tk.Checkbutton(self.view_frame, text="Show Grid", variable=self.show_grid, command=self.render_matrix_to_image).pack(side=tk.TOP)
 
         # 3. TOOLS FRAME (2x4 Grid setup!)
-        self.tools_frame = tk.LabelFrame(self.btn_frame, text="Tools")
-        self.tools_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        self.tools_frame = tk.LabelFrame(self.drawing_tools_pane, text="Tools")
+        self.tools_frame.pack(side=tk.TOP, pady=5, fill=tk.X)
         
         self.current_tool = tk.StringVar(value="pencil")
         tools = [
@@ -153,8 +161,8 @@ class AudioDrawingProgram:
             tk.Radiobutton(row2, text=text, variable=self.current_tool, value=val, indicatoron=0, width=8).pack(side=tk.LEFT, padx=2)
 
         # 4. HISTORY & CANVAS FRAME
-        self.history_frame = tk.LabelFrame(self.btn_frame, text="History & Colors")
-        self.history_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        self.history_frame = tk.LabelFrame(self.drawing_tools_pane, text="History & Colors")
+        self.history_frame.pack(side=tk.TOP, pady=5, fill=tk.X)
         
         self.cmap_var = tk.StringVar(value="spectral_v3")
         self.cmap_dropdown = ttk.Combobox(self.history_frame, textvariable=self.cmap_var, 
@@ -775,14 +783,14 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.canvas_sample_rate = 44100
         self.canvas_duration_seconds = 5.0
         self.original_max_val = float(self.height - 1)
-        
-        # --- DAW TOOLBAR ---
-        self.daw_frame = tk.Frame(root)
-        self.daw_frame.pack(pady=5, fill=tk.X, padx=10)
+
+        # --- BOTTOM PANE FOR SYNTHESIZER TOOLS ---
+        self.bottom_pane = tk.Frame(self.master_frame)
+        self.bottom_pane.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
         
         # 1. FILE I/O & OVERLAY FRAME
-        self.io_frame = tk.LabelFrame(self.daw_frame, text="File & Overlay")
-        self.io_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        self.io_frame = tk.LabelFrame(self.bottom_pane, text="File I/O & Overlay")
+        self.io_frame.pack(side=tk.LEFT, padx=5, fill=tk.BOTH, expand=True)
         
         tk.Button(self.io_frame, text="📂 Open (Ctrl+O)", command=self.open_file).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
         tk.Button(self.io_frame, text="💾 Save (Ctrl+S)", command=self.save_file).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
@@ -828,8 +836,8 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.semi_random_phase_matrix = None
 
         # 2. PLAYBACK ENGINE FRAME
-        self.playback_frame = tk.LabelFrame(self.daw_frame, text="Playback Engine")
-        self.playback_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        self.playback_frame = tk.LabelFrame(self.bottom_pane, text="Playback Engine")
+        self.playback_frame.pack(side=tk.LEFT, padx=5, fill=tk.BOTH, expand=True)
         
         btn_frame = tk.Frame(self.playback_frame)
         btn_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
@@ -839,6 +847,14 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         
         self.stop_btn = tk.Button(btn_frame, text="⏹ Stop", bg="#f44336", fg="white", font=("Arial", 10, "bold"), width=8, command=self.stop_audio)
         self.stop_btn.pack(side=tk.LEFT, padx=2)
+
+        # --- Audio Source Routing Dropdown! ---
+        self.prev_playback_source = "Both (Mix)"
+        tk.Label(self.playback_frame, text="Audio Source:").pack(side=tk.TOP, pady=(5, 0))
+        self.playback_source = tk.StringVar(value=self.prev_playback_source)
+        self.playback_source.trace_add("write", self.clear_audio_cache)
+        
+        ttk.Combobox(self.playback_frame, textvariable=self.playback_source, values=["Main Canvas", "Overlay / Original", "Both (Mix)"], state="readonly", width=16).pack(side=tk.TOP, padx=5, pady=2)
 
         # --- STREAM ENGINE STATE VARIABLES ---
         self.playback_stream = None
@@ -865,25 +881,39 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         tk.Checkbutton(btn_frame, text="Show Playhead Line", variable=self.show_playhead_line, command=lambda: self.draw_playhead(self.time_slider.get() * self.width / 100)).pack(side=tk.LEFT, padx=5)
 
         # 3. SETTINGS FRAME
-        self.settings_frame = tk.LabelFrame(self.daw_frame, text="Settings")
-        self.settings_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        self.settings_frame = tk.LabelFrame(self.bottom_pane, text="Settings")
+        self.settings_frame.pack(side=tk.LEFT, padx=5, fill=tk.BOTH, expand=True)
         
-        self.volume_slider = tk.Scale(self.settings_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL, label="Volume")
+        # --- Volume Slider with Reset Button ---
+        vol_frame = tk.Frame(self.settings_frame)
+        vol_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
+        self.volume_slider = tk.Scale(vol_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL, label="Volume")
         self.volume_slider.set(1.0)
-        self.volume_slider.pack(side=tk.TOP, padx=5)
+        self.volume_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(vol_frame, text="↺", font=("Arial", 13, "bold"), command=lambda: self.volume_slider.set(1.0)).pack(side=tk.RIGHT, padx=2, pady=(15, 0))
         
-        self.speed_slider = tk.Scale(self.settings_frame, from_=0.1, to=5.0, resolution=0.1, orient=tk.HORIZONTAL, label="Speed")
+        # --- Speed Slider with Reset Button ---
+        speed_frame = tk.Frame(self.settings_frame)
+        speed_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
+        self.speed_slider = tk.Scale(speed_frame, from_=0.1, to=5.0, resolution=0.1, orient=tk.HORIZONTAL, label="Speed")
         self.speed_slider.set(1.0)
-        self.speed_slider.pack(side=tk.TOP, padx=5)
+        self.speed_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Button(speed_frame, text="↺", font=("Arial", 13, "bold"), command=lambda: self.speed_slider.set(1.0)).pack(side=tk.RIGHT, padx=2, pady=(15, 0))
+
+        # self.phase_gen_mode = tk.StringVar(value="Original/Semi-Random")
+        self.phase_gen_mode = tk.StringVar(value="Semi-Random Phase")
+        tk.Label(self.settings_frame, text="Synthesis Phase").pack(side=tk.TOP, padx=5, pady=(5,0))
+        # ttk.Combobox(self.settings_frame, textvariable=self.phase_gen_mode, values=["Original/Semi-Random", "Pure Random", "Zero (Robotic)"], state="readonly", width=18).pack(side=tk.TOP, padx=5, pady=2)
+        ttk.Combobox(self.settings_frame, textvariable=self.phase_gen_mode, values=["0 Phase", "Random Phase", "Semi-Random Phase", "Saved Phase"], state="readonly", width=18).pack(side=tk.TOP, padx=5, pady=2)
+        tk.Button(self.settings_frame, text="Apply Phase", command=self.apply_phase_generator).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
 
         # 4. PHASE TOOLS FRAME
-        self.phase_frame = tk.LabelFrame(self.daw_frame, text="Phase Tools")
-        self.phase_frame.pack(side=tk.LEFT, padx=5, fill=tk.Y)
+        # self.phase_frame = tk.LabelFrame(self.bottom_pane, text="Phase Tools")
+        # self.phase_frame.pack(side=tk.LEFT, padx=5, fill=tk.BOTH, expand=True)
 
-        self.phase_gen_mode = tk.StringVar(value="Semi-Random Phase")
-        ttk.Combobox(self.phase_frame, textvariable=self.phase_gen_mode, values=["0 Phase", "Random Phase", "Semi-Random Phase", "Saved Phase"], state="readonly", width=16).pack(side=tk.TOP, padx=5, pady=2)
-        
-        tk.Button(self.phase_frame, text="Apply Phase", command=self.apply_phase_generator).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
+        # self.phase_gen_mode = tk.StringVar(value="Semi-Random Phase")
+        # ttk.Combobox(self.phase_frame, textvariable=self.phase_gen_mode, values=["0 Phase", "Random Phase", "Semi-Random Phase", "Saved Phase"], state="readonly", width=16).pack(side=tk.TOP, padx=5, pady=2)
+        # tk.Button(self.phase_frame, text="Apply Phase", command=self.apply_phase_generator).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
 
         # --- KEYBOARD SHORTCUTS ---
         self.root.bind("<space>", self.toggle_play_pause)
@@ -955,6 +985,15 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             self.draw_playhead(0)
             
         if DEBUG: print("Playback stopped.")
+
+    def clear_audio_cache(self, *args):
+        """Wipes the audio RAM cache so the next Play click forces a recalculation."""
+        if self.prev_playback_source == self.playback_source.get():
+            return
+        self.prev_playback_source = self.playback_source.get()
+        self.cached_base_audio = None
+        if getattr(self, 'is_playing', False):
+            self.stop_audio()
 
     def start_playback_stream(self, playback_sample_rate):
         start_percent = self.time_slider.get() / 100.0
@@ -1187,8 +1226,88 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.stop_audio()
         super().redo(event)
 
+    # def generate_ft_data(self):
+    #     """Synthesizes Audio. Uses Pristine HD Phase UNLESS you edited the phase matrix!"""
+    #     duration_seconds = self.canvas_duration_seconds 
+    #     sample_rate = self.canvas_sample_rate
+    #     NFFT = (self.height - 1) * 2 
+    #     ideal_step = NFFT // 2
+    #     total_samples = int(sample_rate * duration_seconds)
+        
+    #     required_width = max(2, total_samples // ideal_step)
+
+    #     is_editing_imported = hasattr(self, 'pristine_amp_matrix') and self.import_mode.get() == "edit"
+
+    #     if is_editing_imported:
+    #         required_width = self.pristine_amp_matrix.shape[1]
+        
+    #     # 1. PHASE ARCHITECTURE
+    #     if is_editing_imported and hasattr(self, 'pristine_phase_matrix') and not getattr(self, 'phase_is_edited', False):
+    #         # Pristine High-Def Bypass!
+    #         required_width = self.pristine_phase_matrix.shape[1]
+    #         final_phase_matrix = np.flipud(self.pristine_phase_matrix)
+    #     else:
+    #         # Grab from UI
+    #         if hasattr(self, "has_overlay") and self.has_overlay and self.import_mode.get() == "overlay":
+    #             ui_phase_normalized = self.overlay_phase_matrix
+    #         else:
+    #             ui_phase_normalized = self.phase_matrix
+                
+    #         ui_phase = (np.flipud(ui_phase_normalized) * 2 * np.pi) - np.pi
+            
+    #         if ui_phase.shape[1] != required_width:
+    #             pil_phase = Image.fromarray(ui_phase.astype(np.float32), mode="F")
+    #             pil_phase = pil_phase.resize((required_width, self.height), Image.Resampling.NEAREST)
+    #             final_phase_matrix = np.array(pil_phase)
+    #         else:
+    #             final_phase_matrix = ui_phase
+                
+    #     # 2. DELTA MAPPING AMPLITUDE
+    #     if is_editing_imported:
+    #         ui_delta = self.amp_matrix - getattr(self, 'base_squashed_amp')
+    #         if ui_delta.shape[1] != required_width:
+    #             pil_delta = Image.fromarray(ui_delta.astype(np.float32), mode="F")
+    #             pil_delta = pil_delta.resize((required_width, self.height), Image.Resampling.BILINEAR)
+    #             high_def_delta = np.array(pil_delta)
+    #         else:
+    #             high_def_delta = ui_delta
+                
+    #         audio_matrix = self.pristine_amp_matrix + high_def_delta
+    #         audio_matrix = np.clip(audio_matrix, 0.0, 1.0)
+            
+    #         # Delta-mapping residue prevents pure silence. We must hard-gate the erased pixels!
+    #         if self.amp_matrix.shape[1] != required_width:
+    #             pil_mask = Image.fromarray((self.amp_matrix == 0).astype(np.float32), mode="F")
+    #             pil_mask = pil_mask.resize((required_width, self.height), Image.Resampling.NEAREST)
+    #             hd_zero_mask = np.array(pil_mask) > 0.5
+    #         else:
+    #             hd_zero_mask = (self.amp_matrix == 0)
+                
+    #         audio_matrix[hd_zero_mask] = 0.0
+    #         # --------------------------------------
+            
+    #         audio_matrix = np.flipud(audio_matrix)
+    #     else:
+    #         audio_matrix = np.flipud(self.amp_matrix)
+    #         if audio_matrix.shape[1] != required_width:
+    #             pil_amp = Image.fromarray(audio_matrix.astype(np.float32), mode="F")
+    #             pil_amp = pil_amp.resize((required_width, self.height), Image.Resampling.BILINEAR)
+    #             audio_matrix = np.array(pil_amp)
+
+    #     if hasattr(self, 'original_max_val'):
+    #         audio_matrix *= self.original_max_val
+                
+    #     times = np.linspace(0, duration_seconds, required_width)
+    #     freqs = np.linspace(0, sample_rate / 2, self.height)
+        
+    #     return FourierTransformData(
+    #         amp_matrix=audio_matrix, phase_matrix=final_phase_matrix,
+    #         freqs=freqs, times=times, sample_rate=sample_rate,
+    #         NFFT=NFFT, noverlap=max(0, NFFT - ideal_step), useHanning=True
+    #     )
+
     def generate_ft_data(self):
-        """Synthesizes Audio. Uses Pristine HD Phase UNLESS you edited the phase matrix!"""
+        """Synthesizes Audio based on the selected Audio Source Dropdown."""
         duration_seconds = self.canvas_duration_seconds 
         sample_rate = self.canvas_sample_rate
         NFFT = (self.height - 1) * 2 
@@ -1198,23 +1317,87 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         required_width = max(2, total_samples // ideal_step)
 
         is_editing_imported = hasattr(self, 'pristine_amp_matrix') and self.import_mode.get() == "edit"
-
+        has_overlay_matrix = hasattr(self, 'has_overlay') and self.has_overlay and self.import_mode.get() == "overlay"
+        
         if is_editing_imported:
             required_width = self.pristine_amp_matrix.shape[1]
+            
+        src = getattr(self, 'playback_source', tk.StringVar(value="Both (Mix)")).get()
         
-        # 1. PHASE ARCHITECTURE
-        if is_editing_imported and hasattr(self, 'pristine_phase_matrix') and not getattr(self, 'phase_is_edited', False):
-            # Pristine High-Def Bypass!
-            required_width = self.pristine_phase_matrix.shape[1]
-            final_phase_matrix = np.flipud(self.pristine_phase_matrix)
-        else:
-            # Grab from UI
-            if hasattr(self, "has_overlay") and self.has_overlay and self.import_mode.get() == "overlay":
-                ui_phase_normalized = self.overlay_phase_matrix
-            else:
-                ui_phase_normalized = self.phase_matrix
+        # --- 1. ROUTE THE AMPLITUDE AND PHASE MATRICES ---
+        active_amp = None
+        active_phase_ui = None
+        pristine_phase_override = None
+        
+        if src == "Overlay / Original":
+            if is_editing_imported:
+                active_amp = self.pristine_amp_matrix.copy()
+                pristine_phase_override = np.flipud(self.pristine_phase_matrix)
+            elif has_overlay_matrix:
+                active_amp = np.flipud(self.overlay_matrix)
+                active_phase_ui = self.overlay_phase_matrix
+            else: # Blank canvas fallback
+                active_amp = np.zeros((self.height, required_width))
                 
-            ui_phase = (np.flipud(ui_phase_normalized) * 2 * np.pi) - np.pi
+        elif src == "Main Canvas":
+            active_amp = np.flipud(self.amp_matrix)
+            active_phase_ui = self.phase_matrix
+            
+        else: # Both (Mix)
+            if is_editing_imported:
+                ui_delta = self.amp_matrix - getattr(self, 'base_squashed_amp')
+                if ui_delta.shape[1] != required_width:
+                    pil_delta = Image.fromarray(ui_delta.astype(np.float32), mode="F")
+                    pil_delta = pil_delta.resize((required_width, self.height), Image.Resampling.BILINEAR)
+                    high_def_delta = np.array(pil_delta)
+                else:
+                    high_def_delta = ui_delta
+                    
+                mixed_amp = self.pristine_amp_matrix + high_def_delta
+                mixed_amp = np.clip(mixed_amp, 0.0, 1.0)
+                
+                # Eraser Hard-Gate
+                if self.amp_matrix.shape[1] != required_width:
+                    pil_mask = Image.fromarray((self.amp_matrix == 0).astype(np.float32), mode="F")
+                    pil_mask = pil_mask.resize((required_width, self.height), Image.Resampling.NEAREST)
+                    hd_zero_mask = np.array(pil_mask) > 0.5
+                else:
+                    hd_zero_mask = (self.amp_matrix == 0)
+                    
+                mixed_amp[hd_zero_mask] = 0.0
+                active_amp = np.flipud(mixed_amp)
+                
+                if hasattr(self, 'pristine_phase_matrix') and not getattr(self, 'phase_is_edited', False):
+                    pristine_phase_override = np.flipud(self.pristine_phase_matrix)
+                else:
+                    active_phase_ui = self.phase_matrix
+            else:
+                mixed_amp = self.amp_matrix.copy()
+                if has_overlay_matrix:
+                    mixed_amp = np.clip(mixed_amp + self.overlay_matrix, 0.0, 1.0)
+                active_amp = np.flipud(mixed_amp)
+                active_phase_ui = self.phase_matrix
+                
+        # --- 2. RESIZE AND SCALE AMPLITUDE ---
+        if active_amp.shape[1] != required_width:
+            pil_amp = Image.fromarray(active_amp.astype(np.float32), mode="F")
+            pil_amp = pil_amp.resize((required_width, self.height), Image.Resampling.BILINEAR)
+            audio_matrix = np.array(pil_amp)
+        else:
+            audio_matrix = active_amp
+            
+        # Restore pure physical magnitude
+        if hasattr(self, 'original_max_val'):
+            audio_matrix *= self.original_max_val
+            
+        # --- 3. RESIZE AND FORMAT PHASE ---
+        if pristine_phase_override is not None:
+            final_phase_matrix = pristine_phase_override
+        else:
+            if active_phase_ui is None:
+                active_phase_ui = np.full((self.height, required_width), 0.5)
+                
+            ui_phase = (np.flipud(active_phase_ui) * 2 * np.pi) - np.pi
             
             if ui_phase.shape[1] != required_width:
                 pil_phase = Image.fromarray(ui_phase.astype(np.float32), mode="F")
@@ -1222,42 +1405,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
                 final_phase_matrix = np.array(pil_phase)
             else:
                 final_phase_matrix = ui_phase
-                
-        # 2. DELTA MAPPING AMPLITUDE
-        if is_editing_imported:
-            ui_delta = self.amp_matrix - getattr(self, 'base_squashed_amp')
-            if ui_delta.shape[1] != required_width:
-                pil_delta = Image.fromarray(ui_delta.astype(np.float32), mode="F")
-                pil_delta = pil_delta.resize((required_width, self.height), Image.Resampling.BILINEAR)
-                high_def_delta = np.array(pil_delta)
-            else:
-                high_def_delta = ui_delta
-                
-            audio_matrix = self.pristine_amp_matrix + high_def_delta
-            audio_matrix = np.clip(audio_matrix, 0.0, 1.0)
-            
-            # Delta-mapping residue prevents pure silence. We must hard-gate the erased pixels!
-            if self.amp_matrix.shape[1] != required_width:
-                pil_mask = Image.fromarray((self.amp_matrix == 0).astype(np.float32), mode="F")
-                pil_mask = pil_mask.resize((required_width, self.height), Image.Resampling.NEAREST)
-                hd_zero_mask = np.array(pil_mask) > 0.5
-            else:
-                hd_zero_mask = (self.amp_matrix == 0)
-                
-            audio_matrix[hd_zero_mask] = 0.0
-            # --------------------------------------
-            
-            audio_matrix = np.flipud(audio_matrix)
-        else:
-            audio_matrix = np.flipud(self.amp_matrix)
-            if audio_matrix.shape[1] != required_width:
-                pil_amp = Image.fromarray(audio_matrix.astype(np.float32), mode="F")
-                pil_amp = pil_amp.resize((required_width, self.height), Image.Resampling.BILINEAR)
-                audio_matrix = np.array(pil_amp)
 
-        if hasattr(self, 'original_max_val'):
-            audio_matrix *= self.original_max_val
-                
         times = np.linspace(0, duration_seconds, required_width)
         freqs = np.linspace(0, sample_rate / 2, self.height)
         
@@ -1334,12 +1482,13 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         
         if ext == "wav":
             signal = ft_data.to_AudioSignal()
-            signal.apply_volume_change(self.volume_slider.get())
             
-            # --- FIX: Gentle Peak Limiter to prevent clipping ---
+            # --- Gentle Peak Limiter to prevent clipping ---
             max_amp = np.max(np.abs(signal.time_vs_amplitude["Amplitude"].values))
             if max_amp > 1.0:
                 signal.time_vs_amplitude["Amplitude"] /= max_amp
+
+            signal.apply_volume_change(self.volume_slider.get())
                 
             signal.to_audio_file(filepath, use_absolute_path=True)
             
@@ -1349,11 +1498,12 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             
         elif ext == "csv":
             signal = ft_data.to_AudioSignal()
-            signal.apply_volume_change(self.volume_slider.get())
             
             max_amp = np.max(np.abs(signal.time_vs_amplitude["Amplitude"].values))
             if max_amp > 1.0:
                 signal.time_vs_amplitude["Amplitude"] /= max_amp
+                
+            signal.apply_volume_change(self.volume_slider.get())
                 
             signal.to_csv_file(filepath, use_absolute_path=True)
             
