@@ -60,9 +60,15 @@ class AudioDrawingProgram:
         self.top_pane = tk.Frame(self.master_frame)
         self.top_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
+        # --- THE CENTERING WRAPPER ---
+        # This invisible frame expands to fill the screen, but keeps its contents tightly centered!
+        self.center_wrapper = tk.Frame(self.top_pane)
+        self.center_wrapper.pack(expand=True) 
+
         # 1. CANVAS WORKSPACE (Left)
-        self.canvas_pane = tk.Frame(self.top_pane)
-        self.canvas_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Parent is now center_wrapper, and we removed 'expand=True' so it doesn't push the tools away!
+        self.canvas_pane = tk.Frame(self.center_wrapper)
+        self.canvas_pane.pack(side=tk.LEFT, padx=(0, 15)) 
 
         self.workspace_frame = tk.Frame(self.canvas_pane)
         self.workspace_frame.pack(pady=10, anchor=tk.N)
@@ -84,8 +90,9 @@ class AudioDrawingProgram:
         self.coords_label.grid(row=2, column=1, sticky="e", pady=(0, 5))
 
         # 2. DRAWING TOOLS SIDEBAR (Right)
-        self.drawing_tools_pane = tk.Frame(self.top_pane)
-        self.drawing_tools_pane.pack(side=tk.RIGHT, fill=tk.Y, padx=10)
+        # Parent is now center_wrapper, and side=tk.LEFT makes it permanently hug the Canvas!
+        self.drawing_tools_pane = tk.Frame(self.center_wrapper)
+        self.drawing_tools_pane.pack(side=tk.LEFT, fill=tk.Y)
         
         # --- PAN & ZOOM STATE VARIABLES ---
         self.zoom = 1.0
@@ -131,7 +138,7 @@ class AudioDrawingProgram:
         view_top_frame = tk.Frame(self.view_frame)
         view_top_frame.pack(side=tk.TOP, fill=tk.X)
 
-        self.brightness_slider = tk.Scale(view_top_frame, from_=-1.0, to=1.0, resolution=0.05, orient=tk.HORIZONTAL, length=100, label="Brightness", command=lambda _: self.render_matrix_to_image())
+        self.brightness_slider = tk.Scale(view_top_frame, from_=-1.0, to=1.0, resolution=0.05, orient=tk.HORIZONTAL, length=100, label="Brightness", command=lambda _: self.request_render())
         self.brightness_slider.set(0.0)
         self.brightness_slider.pack(side=tk.LEFT, padx=5)
         
@@ -140,16 +147,16 @@ class AudioDrawingProgram:
         tk.Button(btn_col, text="Reset Bright", command=lambda: self.brightness_slider.set(0.0)).pack(side=tk.TOP, pady=2)
         tk.Button(btn_col, text="🏠 Home", command=self.reset_view).pack(side=tk.TOP, pady=2)
 
-        self.grid_x_slider = tk.Scale(self.view_frame, from_=1, to=50, orient=tk.HORIZONTAL, length=100, label="Time (X) Density", command=lambda _: self.render_matrix_to_image())
+        self.grid_x_slider = tk.Scale(self.view_frame, from_=1, to=50, orient=tk.HORIZONTAL, length=100, label="Time (X) Density", command=lambda _: self.request_render())
         self.grid_x_slider.set(10)
         self.grid_x_slider.pack(side=tk.TOP)
 
-        self.grid_y_slider = tk.Scale(self.view_frame, from_=1, to=50, orient=tk.HORIZONTAL, length=100, label="Freq (Y) Density", command=lambda _: self.render_matrix_to_image())
+        self.grid_y_slider = tk.Scale(self.view_frame, from_=1, to=50, orient=tk.HORIZONTAL, length=100, label="Freq (Y) Density", command=lambda _: self.request_render())
         self.grid_y_slider.set(10)
         self.grid_y_slider.pack(side=tk.TOP)
 
         self.show_grid = tk.BooleanVar(value=False)
-        tk.Checkbutton(self.view_frame, text="Show Grid", variable=self.show_grid, command=self.render_matrix_to_image).pack(side=tk.TOP)
+        tk.Checkbutton(self.view_frame, text="Show Grid", variable=self.show_grid, command=self.request_render).pack(side=tk.TOP)
 
         # 3. TOOLS FRAME (2x4 Grid setup!)
         self.tools_frame = tk.LabelFrame(self.drawing_tools_pane, text="Tools")
@@ -205,6 +212,17 @@ class AudioDrawingProgram:
         self.shape_anchor_x = None
         self.shape_anchor_y = None
         self.temp_shape_id = None
+            
+        # Mouse Tracking Variables
+        self.last_x = None
+        self.last_y = None
+        self.currently_clicking = False
+        self.current_hover_color = None
+        self.drawn_mask = np.zeros((self.height, self.width), dtype=bool)
+        self.layer_mask = np.zeros((self.height, self.width), dtype=bool)
+        self.pixel_history_mat = np.full((self.height, self.width), -self.max_diagonal, dtype=float)
+        
+        self._render_pending = False # Frame-Limiter Flag
 
         # --- KEYBOARD SHORTCUTS ---
         self.root.bind("<Control-z>", self.undo)
@@ -219,14 +237,6 @@ class AudioDrawingProgram:
         self.canvas.bind("<Button-5>", self.zoom_canvas) 
         self.canvas.bind("<ButtonPress-3>", self.start_pan) 
         self.canvas.bind("<B3-Motion>", self.do_pan)
-            
-        # 3. Mouse Tracking Variables
-        self.last_x = None
-        self.last_y = None
-        self.currently_clicking = False
-        self.current_hover_color = None
-        self.drawn_pixels = set() # Memory cache for the non-additive pencil!
-        self.layer_pixels = set()
         
         # Bind events
         self.canvas.bind("<ButtonPress-1>", self.start_stroke)
@@ -240,11 +250,21 @@ class AudioDrawingProgram:
 
         self.change_colormap()
 
+        self.request_render()
+
+    def request_render(self):
+        """Caps the heavy rendering process to ~60 FPS to prevent GUI lag!"""
+        if not self._render_pending:
+            self._render_pending = True
+            self.root.after(16, self._execute_render)
+
+    def _execute_render(self):
+        self._render_pending = False
         self.render_matrix_to_image()
 
     def clear_layer_mask(self):
         """Wipes the persistent pixel mask so the Layer Pencil can draw over previous strokes again."""
-        self.layer_pixels.clear()
+        self.layer_mask.fill(False)
 
     def update_coords_display(self, event):
         """Converts mouse pixels into Time (Seconds) and Frequency (Hertz)."""
@@ -286,7 +306,7 @@ class AudioDrawingProgram:
         
         self.hover(event)
         self.clamp_pan()
-        self.render_matrix_to_image()
+        self.request_render()
         
         if hasattr(self, 'time_slider'):
             self.draw_playhead(self.time_slider.get() * self.width / 100)
@@ -309,7 +329,7 @@ class AudioDrawingProgram:
         self.last_pan_x = event.x
         self.last_pan_y = event.y
         self.clamp_pan()
-        self.render_matrix_to_image()
+        self.request_render()
         
         if hasattr(self, 'time_slider'):
             self.draw_playhead(self.time_slider.get() * self.width / 100)
@@ -324,7 +344,7 @@ class AudioDrawingProgram:
     def reset_view(self):
         self.zoom = 1.0
         self.pan_x, self.pan_y = 0.0, 0.0
-        self.render_matrix_to_image()
+        self.request_render()
         if hasattr(self, 'time_slider'):
             self.draw_playhead(self.time_slider.get() * self.width / 100)
 
@@ -383,7 +403,7 @@ class AudioDrawingProgram:
             
             # Pop the last saved state and make it the active matrix
             self.amp_matrix, self.phase_matrix = self.undo_stack.pop()
-            self.render_matrix_to_image()
+            self.request_render()
 
     def redo(self, event=None):
         if self.redo_stack:
@@ -392,7 +412,7 @@ class AudioDrawingProgram:
             
             # Pop the future state and make it the active matrix
             self.amp_matrix, self.phase_matrix = self.redo_stack.pop()
-            self.render_matrix_to_image()
+            self.request_render()
 
     def clear_canvas(self):
         """Saves history and completely clears the main drawing canvas."""
@@ -404,7 +424,7 @@ class AudioDrawingProgram:
             self.phase_matrix.fill(0.5)
             self.phase_is_edited = True
 
-        self.render_matrix_to_image()
+        self.request_render()
 
     def change_colormap(self, event=None):
         """Updates the internal colormap, the UI description, and redraws the canvas!"""
@@ -413,11 +433,15 @@ class AudioDrawingProgram:
         # Update the mathematical colormap
         self.colormap = get_color_map(selected_cmap)
         
+        # Pre-compute all 256 possible colors so we never use slow float-evaluation during live rendering!
+        palette = self.colormap(np.linspace(0, 1, 256))[:, :3]
+        self.color_lut = (palette * 255).astype(np.uint8)
+        
         # Update the UI description text
         self.cmap_desc_label.config(text=COLOR_DESCRIPTIONS[selected_cmap])
         
         # Instantly redraw the spectrogram with the new colors!
-        self.render_matrix_to_image()
+        self.request_render()
 
     def toggle_brush_outline(self):
         """Instantly hides the outline if the user unchecks the box."""
@@ -478,10 +502,21 @@ class AudioDrawingProgram:
         x, y = self.get_modified_coords(event, tool)
         
         self.last_x, self.last_y = x, y
-        self.shape_anchor_x, self.shape_anchor_y = x, y # Set the anchor for shapes!
+        self.shape_anchor_x, self.shape_anchor_y = x, y
+
+        brush_radius = self.brush_slider.get()
+        matrix_rx = max(0.5, (brush_radius / self.zoom) * (self.width / self.ui_width))
+        matrix_ry = max(0.5, (brush_radius / self.zoom) * (self.height / self.ui_height))
         
-        self.drawn_pixels = set()
-        self.pixel_history = {} 
+        self.krx = int(np.ceil(matrix_rx))
+        self.kry = int(np.ceil(matrix_ry))
+        
+        # Calculate the mathematical circle exactly ONCE per stroke!
+        Y, X = np.ogrid[-self.kry:self.kry+1, -self.krx:self.krx+1]
+        self.brush_kernel = (X / matrix_rx)**2 + (Y / matrix_ry)**2 <= 1.0
+        
+        self.drawn_mask.fill(False)
+        self.pixel_history_mat.fill(-self.max_diagonal)
         self.stroke_distance = 0.0
         
         self.paint(event)
@@ -493,11 +528,10 @@ class AudioDrawingProgram:
         brush_radius = self.brush_slider.get()
         active_mat = self.amp_matrix if self.view_mode.get() == "Amplitude" else self.phase_matrix
         
-        temp_drawn_pixels = set()
         # --- BAKE THE SHAPE INTO THE MATRIX ---
         if tool in ["square", "circle", "line", "bucket"]:
             intensity = self.opacity_slider.get() * (-1 if self.negate_opacity.get() else 1)
-            
+
             # 1. Erase the temporary Tkinter visual
             if self.temp_shape_id:
                 self.canvas.delete(self.temp_shape_id)
@@ -506,28 +540,43 @@ class AudioDrawingProgram:
             # 2. Rasterize the Line into the NumPy Array!
             if tool == "line":
                 distance = np.hypot(x - self.last_x, y - self.last_y)
-                steps = max(1, int(distance * 4)) # 4x steps for ultra-smooth sub-pixel lines
                 
                 matrix_rx = max(0.5, (brush_radius / self.zoom) * (self.width / self.ui_width))
                 matrix_ry = max(0.5, (brush_radius / self.zoom) * (self.height / self.ui_height))
+
+                step_size = 0.5
+                steps = max(1, int(distance / step_size))
+
+                temp_line_mask = np.zeros((self.height, self.width), dtype=bool)
 
                 for i in range(1, steps + 1):
                     t = i / steps
                     interp_x = self.last_x + (x - self.last_x) * t
                     interp_y = self.last_y + (y - self.last_y) * t
                     
-                    if 0 <= interp_x < self.width and 0 <= interp_y < self.height:
-                        y_start = max(0, int(interp_y - matrix_ry))
-                        y_end = min(self.height, int(interp_y + matrix_ry) + 1)
-                        x_start = max(0, int(interp_x - matrix_rx))
-                        x_end = min(self.width, int(interp_x + matrix_rx) + 1)
+                    cx, cy = int(round(interp_x)), int(round(interp_y))
+                    
+                    y_start = max(0, cy - self.kry)
+                    y_end = min(self.height, cy + self.kry + 1)
+                    x_start = max(0, cx - self.krx)
+                    x_end = min(self.width, cx + self.krx + 1)
+                    
+                    if y_start < y_end and x_start < x_end:
+                        ky_start = max(0, -(cy - self.kry))
+                        ky_end = self.brush_kernel.shape[0] - max(0, (cy + self.kry + 1) - self.height)
+                        kx_start = max(0, -(cx - self.krx))
+                        kx_end = self.brush_kernel.shape[1] - max(0, (cx + self.krx + 1) - self.width)
                         
-                        for py in range(y_start, y_end):
-                            for px in range(x_start, x_end):
-                                if ((px - interp_x) / matrix_rx)**2 + ((py - interp_y) / matrix_ry)**2 <= 1.0:
-                                    if (px, py) not in temp_drawn_pixels:
-                                        active_mat[py, px] += intensity
-                                        temp_drawn_pixels.add((px, py))
+                        # Apply the pre-computed Brush Kernel!
+                        brush_mask = self.brush_kernel[ky_start:ky_end, kx_start:kx_end]
+                        
+                        sub_line = temp_line_mask[y_start:y_end, x_start:x_end]
+                        sub_active = active_mat[y_start:y_end, x_start:x_end]
+
+                        valid = brush_mask & ~sub_line
+                        sub_active[valid] += intensity
+                        np.clip(sub_active, 0.0, 1.0, out=sub_active)
+                        sub_line[valid] = True
             
             elif tool == "square":
                 x1, x2 = sorted([self.shape_anchor_x, x])
@@ -612,15 +661,13 @@ class AudioDrawingProgram:
             else:
                 self.phase_matrix = np.clip(self.phase_matrix, 0.0, 1.0)
 
-            self.render_matrix_to_image()
+            self.request_render()
         
 
         # Clean up variables for the next stroke
         self.last_x, self.last_y = None, None
         self.currently_clicking = False
         self.shape_anchor_x, self.shape_anchor_y = None, None
-        self.drawn_pixels.clear() 
-        self.pixel_history.clear()
 
         self.hide_brush_outline()
         self.hover(event)
@@ -762,7 +809,11 @@ class AudioDrawingProgram:
         intensity = -opacity if self.negate_opacity.get() else opacity
         
         distance = np.hypot(x - self.last_x, y - self.last_y)
-        steps = max(1, int(distance * 4))
+
+        matrix_rx = max(0.5, (brush_radius / self.zoom) * (self.width / self.ui_width))
+
+        step_size = 0.5 
+        steps = max(1, int(distance / step_size))
         
         for i in range(1, steps + 1):
             t = i / steps
@@ -771,42 +822,48 @@ class AudioDrawingProgram:
             
             self.stroke_distance += (distance / steps)
 
-            matrix_rx = max(0.5, (brush_radius / self.zoom) * (self.width / self.ui_width))
-            matrix_ry = max(0.5, (brush_radius / self.zoom) * (self.height / self.ui_height))
+            cx, cy = int(round(interp_x)), int(round(interp_y))
             
-            if 0 <= interp_x < self.width and 0 <= interp_y < self.height:
-                y_start = max(0, int(interp_y - matrix_ry))
-                y_end = min(self.height, int(interp_y + matrix_ry) + 1)
-                x_start = max(0, int(interp_x - matrix_rx))
-                x_end = min(self.width, int(interp_x + matrix_rx) + 1)
+            y_start = max(0, cy - self.kry)
+            y_end = min(self.height, cy + self.kry + 1)
+            x_start = max(0, cx - self.krx)
+            x_end = min(self.width, cx + self.krx + 1)
+            
+            if y_start < y_end and x_start < x_end:
+                ky_start = max(0, -(cy - self.kry))
+                ky_end = self.brush_kernel.shape[0] - max(0, (cy + self.kry + 1) - self.height)
+                kx_start = max(0, -(cx - self.krx))
+                kx_end = self.brush_kernel.shape[1] - max(0, (cx + self.krx + 1) - self.width)
                 
-                for py in range(y_start, y_end):
-                    for px in range(x_start, x_end):
-                        if ((px - interp_x) / matrix_rx)**2 + ((py - interp_y) / matrix_ry)**2 <= 1.0:
-                            
-                            if tool == "non_add":
-                                if (px, py) not in self.drawn_pixels:
-                                    active_mat[py, px] += intensity
-                                    self.drawn_pixels.add((px, py))
-                            elif tool == "layered":
-                                if (px, py) not in self.layer_pixels:
-                                    active_mat[py, px] += intensity
-                                    self.drawn_pixels.add((px, py))
-                                    self.layer_pixels.add((px, py)) # Protect this pixel from future strokes!
-                            else: 
-                                last_painted_dist = self.pixel_history.get((px, py), -self.max_diagonal)
-                                # Tie the gap spacing to the dynamic matrix radius!
-                                if self.stroke_distance - last_painted_dist > (matrix_rx * 2):
-                                    active_mat[py, px] += intensity
-                                    self.pixel_history[(px, py)] = self.stroke_distance
+                brush_mask = self.brush_kernel[ky_start:ky_end, kx_start:kx_end]
+                sub_active = active_mat[y_start:y_end, x_start:x_end]
 
-        if self.view_mode.get() == "Amplitude":
-            self.amp_matrix = np.clip(self.amp_matrix, 0.0, 1.0)
-        else:
-            self.phase_matrix = np.clip(self.phase_matrix, 0.0, 1.0)
+                if tool == "non_add":
+                    sub_drawn = self.drawn_mask[y_start:y_end, x_start:x_end]
+                    valid = brush_mask & ~sub_drawn
+                    sub_active[valid] += intensity
+                    np.clip(sub_active, 0.0, 1.0, out=sub_active)
+                    sub_drawn[valid] = True
+
+                elif tool == "layered": 
+                    sub_layer = self.layer_mask[y_start:y_end, x_start:x_end]
+                    sub_drawn = self.drawn_mask[y_start:y_end, x_start:x_end]
+                    valid = brush_mask & ~sub_layer
+                    sub_active[valid] += intensity
+                    np.clip(sub_active, 0.0, 1.0, out=sub_active) 
+                    sub_drawn[valid] = True
+                    sub_layer[valid] = True
+
+                else: # Continuous Additive Pencil
+                    sub_history = self.pixel_history_mat[y_start:y_end, x_start:x_end]
+                    valid = brush_mask & ((self.stroke_distance - sub_history) > (matrix_rx * 1.9))
+                    
+                    sub_active[valid] += intensity
+                    np.clip(sub_active, 0.0, 1.0, out=sub_active)
+                    sub_history[brush_mask] = self.stroke_distance
 
         self.last_x, self.last_y = x, y
-        self.render_matrix_to_image()
+        self.request_render()
 
     def render_matrix_to_image(self):
         """The Render Engine: Crops the matrix based on zoom, applies brightness, and upscales it to the canvas."""
@@ -814,7 +871,6 @@ class AudioDrawingProgram:
         
         # Check active view mode!
         viewing_phase = getattr(self, 'view_mode', tk.StringVar(value="Amplitude")).get() == "Phase"
-        # Route the data arrays dynamically
         active_main = self.phase_matrix if viewing_phase else self.amp_matrix
         cropped_main = active_main[y1:y2, x1:x2]
         
@@ -823,17 +879,13 @@ class AudioDrawingProgram:
 
         if brightness != 0.0:
             display_slice = np.clip(cropped_main + brightness, 0.0, 1.0)
-            full_display = np.clip(self.amp_matrix + brightness, 0.0, 1.0)
         else:
             display_slice = cropped_main
-            full_display = self.amp_matrix
             
-        colored_cropped = self.colormap(display_slice)
-        cropped_int = (colored_cropped[:, :, :3] * 255).astype(np.uint8)
+        slice_uint8 = (display_slice * 255).astype(np.uint8)
+        cropped_int = self.color_lut[slice_uint8]
+
         display_pil = Image.fromarray(cropped_int).resize((self.ui_width, self.ui_height), Image.Resampling.NEAREST)
-        
-        colored_full = self.colormap(full_display)
-        self.pil_image = Image.fromarray((colored_full[:, :, :3] * 255).astype(np.uint8))
         
         self.tk_image = ImageTk.PhotoImage(image=display_pil)
         self.canvas.itemconfig(self.canvas_image_id, image=self.tk_image)
@@ -865,22 +917,22 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.root.bind("<Control-s>", self.save_file)
         
         self.import_mode = tk.StringVar(value="edit")
-        tk.Radiobutton(self.io_frame, text="Import to Edit", variable=self.import_mode, value="edit", command=self.render_matrix_to_image).pack(side=tk.TOP, anchor=tk.W)
-        tk.Radiobutton(self.io_frame, text="Import as Overlay", variable=self.import_mode, value="overlay", command=self.render_matrix_to_image).pack(side=tk.TOP, anchor=tk.W)
+        tk.Radiobutton(self.io_frame, text="Import to Edit", variable=self.import_mode, value="edit", command=self.request_render).pack(side=tk.TOP, anchor=tk.W)
+        tk.Radiobutton(self.io_frame, text="Import as Overlay", variable=self.import_mode, value="overlay", command=self.request_render).pack(side=tk.TOP, anchor=tk.W)
         
         # --- View & Trace Toggles ---
         self.show_overlay = tk.BooleanVar(value=True)
-        tk.Checkbutton(self.io_frame, text="Show Overlay", variable=self.show_overlay, command=self.render_matrix_to_image).pack(side=tk.TOP, anchor=tk.W)
+        tk.Checkbutton(self.io_frame, text="Show Overlay", variable=self.show_overlay, command=self.request_render).pack(side=tk.TOP, anchor=tk.W)
 
         self.draw_in_red = tk.BooleanVar(value=True)
-        tk.Checkbutton(self.io_frame, text="Red Draw Mode", variable=self.draw_in_red, command=self.render_matrix_to_image).pack(side=tk.TOP, anchor=tk.W)
+        tk.Checkbutton(self.io_frame, text="Red Draw Mode", variable=self.draw_in_red, command=self.request_render).pack(side=tk.TOP, anchor=tk.W)
         
         tk.Button(self.io_frame, text="🗑 Clear Overlay", bg="#ffcccc", command=self.clear_overlay).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
 
         # --- Swap Canvas & Overlay Button ---
         tk.Button(self.io_frame, text="🔄 Swap Canvas/Overlay", command=self.swap_canvas_overlay).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
         
-        self.overlay_opacity = tk.Scale(self.io_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL, label="Overlay Opacity", command=lambda _: self.render_matrix_to_image())
+        self.overlay_opacity = tk.Scale(self.io_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL, label="Overlay Opacity", command=lambda _: self.request_render())
         self.overlay_opacity.set(0.4)
         self.overlay_opacity.pack(side=tk.TOP, padx=5)
 
@@ -890,8 +942,8 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         # --- Dynamic View Toggles ---
         view_toggle_frame = tk.Frame(view_top_frame)
         view_toggle_frame.pack(side=tk.TOP, fill=tk.X, pady=2)
-        tk.Radiobutton(view_toggle_frame, text="View Amp", variable=self.view_mode, value="Amplitude", command=self.render_matrix_to_image).pack(side=tk.LEFT)
-        tk.Radiobutton(view_toggle_frame, text="View Phase", variable=self.view_mode, value="Phase", command=self.render_matrix_to_image).pack(side=tk.LEFT)
+        tk.Radiobutton(view_toggle_frame, text="View Amp", variable=self.view_mode, value="Amplitude", command=self.request_render).pack(side=tk.LEFT)
+        tk.Radiobutton(view_toggle_frame, text="View Phase", variable=self.view_mode, value="Phase", command=self.request_render).pack(side=tk.LEFT)
         
         # Overlay State
         self.overlay_matrix = np.zeros((self.height, self.width), dtype=float)
@@ -973,17 +1025,8 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         # self.phase_gen_mode = tk.StringVar(value="Original/Semi-Random")
         self.phase_gen_mode = tk.StringVar(value="Semi-Random Phase")
         tk.Label(self.settings_frame, text="Synthesis Phase").pack(side=tk.TOP, padx=5, pady=(5,0))
-        # ttk.Combobox(self.settings_frame, textvariable=self.phase_gen_mode, values=["Original/Semi-Random", "Pure Random", "Zero (Robotic)"], state="readonly", width=18).pack(side=tk.TOP, padx=5, pady=2)
         ttk.Combobox(self.settings_frame, textvariable=self.phase_gen_mode, values=["0 Phase", "Random Phase", "Semi-Random Phase", "Saved Phase"], state="readonly", width=18).pack(side=tk.TOP, padx=5, pady=2)
         tk.Button(self.settings_frame, text="Apply Phase", command=self.apply_phase_generator).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
-
-        # 4. PHASE TOOLS FRAME
-        # self.phase_frame = tk.LabelFrame(self.bottom_pane, text="Phase Tools")
-        # self.phase_frame.pack(side=tk.LEFT, padx=5, fill=tk.BOTH, expand=True)
-
-        # self.phase_gen_mode = tk.StringVar(value="Semi-Random Phase")
-        # ttk.Combobox(self.phase_frame, textvariable=self.phase_gen_mode, values=["0 Phase", "Random Phase", "Semi-Random Phase", "Saved Phase"], state="readonly", width=16).pack(side=tk.TOP, padx=5, pady=2)
-        # tk.Button(self.phase_frame, text="Apply Phase", command=self.apply_phase_generator).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
 
         # --- KEYBOARD SHORTCUTS ---
         self.root.bind("<space>", self.toggle_play_pause)
@@ -1149,7 +1192,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             if hasattr(self, attr): delattr(self, attr)
             
         self.has_overlay = False
-        self.render_matrix_to_image()
+        self.request_render()
 
     def update_playhead_loop(self):
         if not self.is_playing: return
@@ -1200,21 +1243,16 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
 
         x1, y1, x2, y2 = self.get_crop_bounds()
 
-        # Check active view mode!
         viewing_phase = getattr(self, 'view_mode', tk.StringVar(value="Amplitude")).get() == "Phase"
-        # Route the data arrays dynamically
         active_main = self.phase_matrix if viewing_phase else self.amp_matrix
         cropped_main = active_main[y1:y2, x1:x2]
         
         brightness = self.brightness_slider.get()
         
-        # 1. Apply to main drawing
         if brightness != 0.0:
             disp_main = np.clip(cropped_main + brightness, 0.0, 1.0)
-            full_main = np.clip(active_main + brightness, 0.0, 1.0)
         else:
             disp_main = cropped_main
-            full_main = active_main
         
         if has_overlay and show_overlay:
             active_overlay = self.overlay_phase_matrix if viewing_phase else self.overlay_matrix
@@ -1222,37 +1260,31 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             
             if brightness != 0.0:
                 disp_overlay = np.clip(cropped_overlay + brightness, 0.0, 1.0)
-                full_overlay = np.clip(active_overlay + brightness, 0.0, 1.0)
             else:
                 disp_overlay = cropped_overlay
-                full_overlay = active_overlay
             
             if draw_in_red:
-                overlay_colored = self.colormap(disp_overlay)[:, :, :3]
+                # Use LUT for the overlay as well!
+                ov_uint8 = (disp_overlay * 255).astype(np.uint8)
+                overlay_colored = self.color_lut[ov_uint8] / 255.0 # Need floats for alpha blending
+                
                 alpha = disp_main[:, :, np.newaxis]
                 red_layer = np.array([1.0, 0.0, 0.0])
                 display_rgb = (red_layer * alpha) + (overlay_colored * (1.0 - alpha))
                 
-                full_overlay_colored = self.colormap(full_overlay)[:, :, :3]
-                full_alpha = full_main[:, :, np.newaxis]
-                full_rgb = (red_layer * full_alpha) + (full_overlay_colored * (1.0 - full_alpha))
-                
             else:
                 alpha_blend = self.overlay_opacity.get()
                 display_slice = np.clip(disp_main + (disp_overlay * alpha_blend), 0.0, 1.0)
-                full_slice = np.clip(full_main + (full_overlay * alpha_blend), 0.0, 1.0)
                 
-                display_rgb = self.colormap(display_slice)[:, :, :3]
-                full_rgb = self.colormap(full_slice)[:, :, :3]
+                slice_uint8 = (display_slice * 255).astype(np.uint8)
+                display_rgb = self.color_lut[slice_uint8] / 255.0 # Normalize back for the final int conversion
         else:
-            display_rgb = self.colormap(disp_main)[:, :, :3]
-            full_rgb = self.colormap(full_main)[:, :, :3]
+            slice_uint8 = (disp_main * 255).astype(np.uint8)
+            display_rgb = self.color_lut[slice_uint8] / 255.0
             
         cropped_int = (display_rgb * 255).astype(np.uint8)
-        full_int = (full_rgb * 255).astype(np.uint8)
         
         display_pil = Image.fromarray(cropped_int).resize((self.ui_width, self.ui_height), Image.Resampling.NEAREST)
-        self.pil_image = Image.fromarray(full_int)
         
         self.tk_image = ImageTk.PhotoImage(image=display_pil)
         self.canvas.itemconfig(self.canvas_image_id, image=self.tk_image)
@@ -1307,7 +1339,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.overlay_phase_is_edited = temp_edited
         
         self.has_overlay = True
-        self.render_matrix_to_image()
+        self.request_render()
 
     def start_stroke(self, event):
         if self.undo_redo_counter < 0: self.undo_redo_counter = 0
@@ -1505,7 +1537,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             semi_offset = np.random.uniform(-np.pi, np.pi, size=self.phase_matrix.shape) * 0.5
             self.phase_matrix = (semi_offset + np.pi) / (2 * np.pi)
 
-        self.render_matrix_to_image()
+        self.request_render()
 
     def clear_canvas(self):
         self.stop_audio()
@@ -1527,7 +1559,36 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         ext = filepath.split('.')[-1].lower()
         
         if ext == "png":
-            self.pil_image.save(filepath)
+            # --- ON-DEMAND FULL-RES EXPORT ---
+            has_overlay = hasattr(self, 'has_overlay') and self.has_overlay
+            show_overlay = getattr(self, 'show_overlay', tk.BooleanVar(value=False)).get()
+            draw_in_red = getattr(self, 'draw_in_red', tk.BooleanVar(value=False)).get()
+            viewing_phase = getattr(self, 'view_mode', tk.StringVar(value="Amplitude")).get() == "Phase"
+            
+            active_main = self.phase_matrix if viewing_phase else self.amp_matrix
+            brightness = self.brightness_slider.get()
+            
+            full_main = np.clip(active_main + brightness, 0.0, 1.0) if brightness != 0.0 else active_main
+            
+            if has_overlay and show_overlay:
+                active_overlay = self.overlay_phase_matrix if viewing_phase else self.overlay_matrix
+                full_overlay = np.clip(active_overlay + brightness, 0.0, 1.0) if brightness != 0.0 else active_overlay
+                
+                if draw_in_red:
+                    full_overlay_colored = self.colormap(full_overlay)[:, :, :3]
+                    full_alpha = full_main[:, :, np.newaxis]
+                    red_layer = np.array([1.0, 0.0, 0.0])
+                    full_rgb = (red_layer * full_alpha) + (full_overlay_colored * (1.0 - full_alpha))
+                else:
+                    alpha_blend = self.overlay_opacity.get()
+                    full_slice = np.clip(full_main + (full_overlay * alpha_blend), 0.0, 1.0)
+                    full_rgb = self.colormap(full_slice)[:, :, :3]
+            else:
+                full_rgb = self.colormap(full_main)[:, :, :3]
+
+            full_int = (full_rgb * 255).astype(np.uint8)
+            Image.fromarray(full_int).save(filepath)
+            
             mb.showinfo("Saved", f"Image saved to {filepath}")
             return
             
@@ -1727,7 +1788,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             self.time_slider.set(0)
             self.draw_playhead(0)
                 
-            self.render_matrix_to_image()
+            self.request_render()
 
             if create_cache_data and ext != "png":
                 ft_data = self.generate_ft_data()

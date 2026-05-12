@@ -1,9 +1,11 @@
 FIX NOW:
-make the program run faster
+N/A
 
 DrawingProgram TODO:
-reduce the padding between the canvas and the tools on the right
+make the canvas change size based on the size of the window
+
 be able to select pixels and then shift them, along the time, frequency, or both axes, and if the data gets cutoff, just don't play or export it
+    have a mode selection between drawing and selecting
 allow for different layers, with a menu and checkboxs for enabling or disabling different layers, as well as naming capabilities
     and extension for SpectrogramSynthesizer, make it so that the layers act as one canvas, and can be heard separately or together with the overlay
     also, only the visible layers should be audible
@@ -33,5 +35,6 @@ make the audio synthesis and file uploading work with noverlap values that aren'
 
 General TODO:
 rename "fft_utils.py" to "signal_processing.py", and "gui_utils.py" to "synthesizer_daw.py"
+make the program run faster (semi done? do again later after more features)
 stylize the program, ie:
-add a color palette like a dark mode and light mode, and a button to switch between them or a drop down to select one
+    add a color palette like a dark mode and light mode, and a button to switch between them or a drop down to select one
