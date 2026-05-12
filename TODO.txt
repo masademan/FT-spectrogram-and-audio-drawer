@@ -2,9 +2,7 @@ FIX NOW:
 make the program run faster
 
 DrawingProgram TODO:
-write the coordinates of the mouse on the canvas in the bottom right corner of the window, and in relation to the time and frequency
-a layered pencil, similar to the non-additive, but even when letting go, it doesn't add to what it drew unless you click a button that says "new layer", ie, clearing the drawn_pixels set
-an option to make the circle and square tool fill rather than just the outline, with a checkbox for example
+reduce the padding between the canvas and the tools on the right
 be able to select pixels and then shift them, along the time, frequency, or both axes, and if the data gets cutoff, just don't play or export it
 allow for different layers, with a menu and checkboxs for enabling or disabling different layers, as well as naming capabilities
     and extension for SpectrogramSynthesizer, make it so that the layers act as one canvas, and can be heard separately or together with the overlay

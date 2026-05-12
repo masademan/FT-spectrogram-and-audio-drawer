@@ -5,6 +5,7 @@ import threading
 import numpy as np
 import tkinter as tk
 from tkinter import ttk
+from sys import platform
 import sounddevice as sd
 from PIL import Image, ImageTk
 from scipy.ndimage import label
@@ -31,6 +32,12 @@ class AudioDrawingProgram:
     def __init__(self, root, ui_width=1000, ui_height=400, res_width=2000, res_height=513, name="Drawing Program"):
         self.root = root
         self.root.title(name)
+        self.os_used = platform # "win32" => Windows, "linux" => Linux, "darwin" => macOS
+
+        if self.os_used in ["win32", "darwin"]:
+            self.root.state("zoomed")
+        else:
+            self.root.attributes("-zoomed", True)
         
         self.ui_width = ui_width
         self.ui_height = ui_height
@@ -71,6 +78,10 @@ class AudioDrawingProgram:
         # X-Axis (Uses UI width)
         self.x_axis_canvas = tk.Canvas(self.workspace_frame, width=self.ui_width, height=30, bg=root.cget("bg"), highlightthickness=0)
         self.x_axis_canvas.grid(row=1, column=1, sticky="ew")
+
+        # --- Live Coordinate Tracker ---
+        self.coords_label = tk.Label(self.workspace_frame, text="-- s | -- Hz", font=("Arial", 10), fg="gray")
+        self.coords_label.grid(row=2, column=1, sticky="e", pady=(0, 5))
 
         # 2. DRAWING TOOLS SIDEBAR (Right)
         self.drawing_tools_pane = tk.Frame(self.top_pane)
@@ -146,19 +157,24 @@ class AudioDrawingProgram:
         
         self.current_tool = tk.StringVar(value="pencil")
         tools = [
-            ("Pencil", "pencil"), ("Non-Add", "non_add"), ("TBD", "new_tool"), ("Dropper", "dropper"),
+            ("Pencil", "pencil"), ("Non-Add", "non_add"), ("Layered", "layered"), ("Dropper", "dropper"),
             ("Rectangle", "square"), ("Circle", "circle"), ("Line", "line"), ("Bucket", "bucket")
         ]
         
         row1 = tk.Frame(self.tools_frame)
         row1.pack(side=tk.TOP, pady=5)
-        for text, val in tools[:4]:
+        for text, val in tools[:len(tools)//2]:
             tk.Radiobutton(row1, text=text, variable=self.current_tool, value=val, indicatoron=0, width=8).pack(side=tk.LEFT, padx=2)
             
         row2 = tk.Frame(self.tools_frame)
         row2.pack(side=tk.TOP, pady=5)
-        for text, val in tools[4:]:
+        for text, val in tools[len(tools)//2:]:
             tk.Radiobutton(row2, text=text, variable=self.current_tool, value=val, indicatoron=0, width=8).pack(side=tk.LEFT, padx=2)
+
+        tk.Button(self.tools_frame, text="New Layer (Clear Mask)", command=self.clear_layer_mask).pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+
+        self.fill_shapes = tk.BooleanVar(value=False)
+        tk.Checkbutton(self.tools_frame, text="Fill Shapes (Square/Circle)", variable=self.fill_shapes).pack(side=tk.TOP, anchor=tk.W, padx=5)
 
         # 4. HISTORY & CANVAS FRAME
         self.history_frame = tk.LabelFrame(self.drawing_tools_pane, text="History & Colors")
@@ -210,18 +226,45 @@ class AudioDrawingProgram:
         self.currently_clicking = False
         self.current_hover_color = None
         self.drawn_pixels = set() # Memory cache for the non-additive pencil!
+        self.layer_pixels = set()
         
         # Bind events
         self.canvas.bind("<ButtonPress-1>", self.start_stroke)
         self.canvas.bind("<B1-Motion>", self.paint)
         self.canvas.bind("<ButtonRelease-1>", self.end_stroke)
+        self.canvas.bind("<Motion>", self.update_coords_display)
+        self.canvas.bind("<Leave>", lambda e: self.coords_label.config(text="-- s | -- Hz"))
         self.cmap_dropdown.bind("<<ComboboxSelected>>", self.change_colormap)
-        self.canvas.bind("<Motion>", self.hover) # Fires when moving WITHOUT clicking
-        self.canvas.bind("<Leave>", self.hide_brush_outline) # Fires when mouse leaves the canvas
+        self.canvas.bind("<Motion>", self.hover, add="+") # Fires when moving WITHOUT clicking
+        self.canvas.bind("<Leave>", self.hide_brush_outline, add="+") # Fires when mouse leaves the canvas
 
         self.change_colormap()
 
         self.render_matrix_to_image()
+
+    def clear_layer_mask(self):
+        """Wipes the persistent pixel mask so the Layer Pencil can draw over previous strokes again."""
+        self.layer_pixels.clear()
+
+    def update_coords_display(self, event):
+        """Converts mouse pixels into Time (Seconds) and Frequency (Hertz)."""
+        # Safely get current DAW settings, falling back to defaults if not set yet
+        duration = getattr(self, 'canvas_duration_seconds', 5.0)
+        sample_rate = getattr(self, 'canvas_sample_rate', 44100)
+
+        # X is Time (0 to Duration)
+        time_sec = (event.x / self.ui_width) * duration
+
+        # Y is Frequency (Inverted: 0 at bottom, Nyquist limit at top)
+        nyquist_freq = sample_rate / 2
+        freq_hz = ((self.ui_height - event.y) / self.ui_height) * nyquist_freq
+
+        # Clamp values safely inside the canvas limits
+        time_sec = max(0.0, min(time_sec, duration))
+        freq_hz = max(0.0, min(freq_hz, nyquist_freq))
+
+        # Update the UI Label
+        self.coords_label.config(text=f"{time_sec:.2f} s | {int(freq_hz)} Hz")
 
     def close_window(self, event=None):
         self.root.destroy()
@@ -453,6 +496,8 @@ class AudioDrawingProgram:
         temp_drawn_pixels = set()
         # --- BAKE THE SHAPE INTO THE MATRIX ---
         if tool in ["square", "circle", "line", "bucket"]:
+            intensity = self.opacity_slider.get() * (-1 if self.negate_opacity.get() else 1)
+            
             # 1. Erase the temporary Tkinter visual
             if self.temp_shape_id:
                 self.canvas.delete(self.temp_shape_id)
@@ -460,8 +505,6 @@ class AudioDrawingProgram:
                 
             # 2. Rasterize the Line into the NumPy Array!
             if tool == "line":
-                intensity = self.opacity_slider.get() * (-1 if self.negate_opacity.get() else 1)
-                
                 distance = np.hypot(x - self.last_x, y - self.last_y)
                 steps = max(1, int(distance * 4)) # 4x steps for ultra-smooth sub-pixel lines
                 
@@ -487,34 +530,41 @@ class AudioDrawingProgram:
                                         temp_drawn_pixels.add((px, py))
             
             elif tool == "square":
-                intensity = self.opacity_slider.get() * (-1 if self.negate_opacity.get() else 1)
-                
-                matrix_rx = max(0.5, (brush_radius / self.zoom) * (self.width / self.ui_width))
-                matrix_ry = max(0.5, (brush_radius / self.zoom) * (self.height / self.ui_height))
-
-                Tx = int(max(1, matrix_rx * 2))
-                Ty = int(max(1, matrix_ry * 2))
-                
                 x1, x2 = sorted([self.shape_anchor_x, x])
                 y1, y2 = sorted([self.shape_anchor_y, y])
                 
-                x1 = int(max(0, x1 - Tx/2))
-                x2 = int(min(self.width, x2 + Tx/2))
-                y1 = int(max(0, y1 - Ty/2))
-                y2 = int(min(self.height, y2 + Ty/2))
+                if self.fill_shapes.get():
+                    # --- Solid Fill Logic ---
+                    x1_idx = int(max(0, x1))
+                    x2_idx = int(min(self.width, x2))
+                    y1_idx = int(max(0, y1))
+                    y2_idx = int(min(self.height, y2))
+                    active_mat[y1_idx:y2_idx, x1_idx:x2_idx] += intensity
+                else:
+                    # --- Original Outline Logic ---
+                    matrix_rx = max(0.5, (brush_radius / self.zoom) * (self.width / self.ui_width))
+                    matrix_ry = max(0.5, (brush_radius / self.zoom) * (self.height / self.ui_height))
 
-                y_inner_top = int(min(y1 + Ty, y2))
-                y_inner_bottom = int(max(y1 + Ty, y2 - Ty))
-                x_inner_left = int(min(x1 + Tx, x2))
-                x_inner_right = int(max(x1 + Tx, x2 - Tx))
-                
-                active_mat[y1:y_inner_top, x1:x2] += intensity
-                active_mat[y_inner_bottom:y2, x1:x2] += intensity
-                active_mat[y_inner_top:y_inner_bottom, x1:x_inner_left] += intensity
-                active_mat[y_inner_top:y_inner_bottom, x_inner_right:x2] += intensity
+                    Tx = int(max(1, matrix_rx * 2))
+                    Ty = int(max(1, matrix_ry * 2))
+                    
+                    x1_out = int(max(0, x1 - Tx/2))
+                    x2_out = int(min(self.width, x2 + Tx/2))
+                    y1_out = int(max(0, y1 - Ty/2))
+                    y2_out = int(min(self.height, y2 + Ty/2))
+
+                    y_inner_top = int(min(y1_out + Ty, y2_out))
+                    y_inner_bottom = int(max(y1_out + Ty, y2_out - Ty))
+                    x_inner_left = int(min(x1_out + Tx, x2_out))
+                    x_inner_right = int(max(x1_out + Tx, x2_out - Tx))
+                    
+                    active_mat[y1_out:y_inner_top, x1_out:x2_out] += intensity
+                    active_mat[y_inner_bottom:y2_out, x1_out:x2_out] += intensity
+                    active_mat[y_inner_top:y_inner_bottom, x1_out:x_inner_left] += intensity
+                    active_mat[y_inner_top:y_inner_bottom, x_inner_right:x2_out] += intensity
 
             elif tool == "bucket":
-                intensity = self.opacity_slider.get() if not self.negate_opacity.get() else 0
+                intensity = intensity if not self.negate_opacity.get() else 0
                 safe_x = int(max(0, min(self.width - 1, x)))
                 safe_y = int(max(0, min(self.height - 1, y)))
                 target_amp = active_mat[safe_y, safe_x]
@@ -524,8 +574,6 @@ class AudioDrawingProgram:
                 active_mat[labeled_matrix == clicked_blob_id] = intensity
 
             elif tool == "circle":
-                intensity = self.opacity_slider.get()
-                
                 matrix_rx = max(0.5, (brush_radius / self.zoom) * (self.width / self.ui_width))
                 matrix_ry = max(0.5, (brush_radius / self.zoom) * (self.height / self.ui_height))
                 
@@ -544,15 +592,19 @@ class AudioDrawingProgram:
                 
                 if box_x2 > box_x1 and box_y2 > box_y1:
                     Y, X = np.ogrid[box_y1:box_y2, box_x1:box_x2]
-                    
                     outer_mask = ((X - cx) / (rx + matrix_rx))**2 + ((Y - cy) / (ry + matrix_ry))**2 <= 1.0
                     
-                    inner_rx = max(0.0001, rx - matrix_rx)
-                    inner_ry = max(0.0001, ry - matrix_ry)
-                    inner_mask = ((X - cx) / inner_rx)**2 + ((Y - cy) / inner_ry)**2 <= 1.0
-                    
-                    ring_mask = outer_mask & ~inner_mask
-                    active_mat[box_y1:box_y2, box_x1:box_x2][ring_mask] += intensity
+                    if self.fill_shapes.get():
+                        # --- NEW: Solid Fill Logic ---
+                        active_mat[box_y1:box_y2, box_x1:box_x2][outer_mask] += intensity
+                    else:
+                        # --- Original Outline Logic ---
+                        inner_rx = max(0.0001, rx - matrix_rx)
+                        inner_ry = max(0.0001, ry - matrix_ry)
+                        inner_mask = ((X - cx) / inner_rx)**2 + ((Y - cy) / inner_ry)**2 <= 1.0
+                        
+                        ring_mask = outer_mask & ~inner_mask
+                        active_mat[box_y1:box_y2, box_x1:box_x2][ring_mask] += intensity
 
             # Re-render the matrix to show the baked shape
             if self.view_mode.get() == "Amplitude":
@@ -665,21 +717,29 @@ class AudioDrawingProgram:
                     )
                     
             elif tool == "square":
+                fill_color = "red" if self.fill_shapes.get() else ""
+                stipple_val = "gray50" if fill_color else ""
+                
                 if self.temp_shape_id:
                     self.canvas.coords(self.temp_shape_id, ui_anchor_x, ui_anchor_y, ui_x, ui_y)
+                    self.canvas.itemconfig(self.temp_shape_id, fill=fill_color, stipple=stipple_val)
                 else:
                     self.temp_shape_id = self.canvas.create_rectangle(
                         ui_anchor_x, ui_anchor_y, ui_x, ui_y, 
-                        outline="red", width=4, dash=(4, 4)
+                        outline="red", fill=fill_color, stipple=stipple_val, width=4, dash=(4, 4)
                     )
                     
             elif tool == "circle":
+                fill_color = "red" if self.fill_shapes.get() else ""
+                stipple_val = "gray50" if fill_color else ""
+                
                 if self.temp_shape_id:
                     self.canvas.coords(self.temp_shape_id, ui_anchor_x, ui_anchor_y, ui_x, ui_y)
+                    self.canvas.itemconfig(self.temp_shape_id, fill=fill_color, stipple=stipple_val)
                 else:
                     self.temp_shape_id = self.canvas.create_oval(
                         ui_anchor_x, ui_anchor_y, ui_x, ui_y, 
-                        outline="red", width=4, dash=(4, 4)
+                        outline="red", fill=fill_color, stipple=stipple_val, width=4, dash=(4, 4)
                     )
                     
             elif tool == "dropper":
@@ -728,6 +788,11 @@ class AudioDrawingProgram:
                                 if (px, py) not in self.drawn_pixels:
                                     active_mat[py, px] += intensity
                                     self.drawn_pixels.add((px, py))
+                            elif tool == "layered":
+                                if (px, py) not in self.layer_pixels:
+                                    active_mat[py, px] += intensity
+                                    self.drawn_pixels.add((px, py))
+                                    self.layer_pixels.add((px, py)) # Protect this pixel from future strokes!
                             else: 
                                 last_painted_dist = self.pixel_history.get((px, py), -self.max_diagonal)
                                 # Tie the gap spacing to the dynamic matrix radius!
@@ -1247,7 +1312,8 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
     def start_stroke(self, event):
         if self.undo_redo_counter < 0: self.undo_redo_counter = 0
         self.undo_redo_counter += 1
-        self.stop_audio()
+        if self.is_playing:
+            self.stop_audio()
         super().start_stroke(event)
 
     def undo(self, event=None):
@@ -1673,6 +1739,6 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
 
 if __name__ == "__main__":
     root = tk.Tk()
-    # app = DrawingProgram(root)
+    # app = AudioDrawingProgram(root)
     app = SpectrogramSynthesizer(root, ui_width=2000, ui_height=1000, res_width=2000, res_height =513)
     root.mainloop()
