@@ -1,18 +1,19 @@
 FIX NOW:
-N/A
+make the program run faster
 
 DrawingProgram TODO:
 write the coordinates of the mouse on the canvas in the bottom right corner of the window, and in relation to the time and frequency
 a layered pencil, similar to the non-additive, but even when letting go, it doesn't add to what it drew unless you click a button that says "new layer", ie, clearing the drawn_pixels set
 an option to make the circle and square tool fill rather than just the outline, with a checkbox for example
 be able to select pixels and then shift them, along the time, frequency, or both axes, and if the data gets cutoff, just don't play or export it
-allow for different layers, with a menu and checkboxs for enabling or disabling different layers
+allow for different layers, with a menu and checkboxs for enabling or disabling different layers, as well as naming capabilities
+    and extension for SpectrogramSynthesizer, make it so that the layers act as one canvas, and can be heard separately or together with the overlay
+    also, only the visible layers should be audible
 msg text in the far right bottom to display text instead of printing to console
 make the wacom tablet work with the canvas better
 
 SpectrogramSynthesizer TODO:
-reset button for volume and speed
-option to hear the overlay as well as what's drawn on the canvas in the synthesized and saved audio
+make the streamed audio able to start in the middle of the recording rather than needing to start from the beginning
 button to reverse the spectrogram canvas, and another button for the overlay (reversing across time)
 the option to see a plot of amplitude along the time axis or frequency axis, like in sebastian lague's video (https://youtu.be/rRnOtKlg4jA?t=1733), maybe with a button to enable/disable it, and then a draggable triangle on the right part of the screen
     then the entire screen gets a black overlay of alpha ~0.5 and a white line representing a plot of the normalized amplitude over time of the frequency selected with the draggable triangle
@@ -35,5 +36,4 @@ make the audio synthesis and file uploading work with noverlap values that aren'
 General TODO:
 rename "fft_utils.py" to "signal_processing.py", and "gui_utils.py" to "synthesizer_daw.py"
 stylize the program, ie:
-move the tools to the right part of the screen and the canvas toward the left part
 add a color palette like a dark mode and light mode, and a button to switch between them or a drop down to select one

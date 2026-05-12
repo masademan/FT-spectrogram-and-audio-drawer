@@ -195,6 +195,7 @@ class AudioDrawingProgram:
         self.root.bind("<Control-y>", self.redo)
         self.root.bind("<Control-Z>", self.redo) 
         self.root.bind("<Control-w>", self.close_window)
+        self.root.bind("<Escape>", self.close_window)
 
         # --- PAN & ZOOM BINDINGS ---
         self.canvas.bind("<MouseWheel>", self.zoom_canvas)
@@ -874,7 +875,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.loop_var = tk.BooleanVar(value=False)
         tk.Checkbutton(btn_frame, text="Loop", variable=self.loop_var).pack(side=tk.LEFT, padx=5)
         
-        self.time_slider = tk.Scale(self.playback_frame, from_=0.0, to=100.0, resolution=0.1, orient=tk.HORIZONTAL, label="Start Position (%)", length=300, command=lambda _: self.draw_playhead(self.time_slider.get() * self.width / 100))
+        self.time_slider = tk.Scale(self.playback_frame, from_=0.0, to=100.0, resolution=0.1, orient=tk.HORIZONTAL, label="Start Position (%)", length=300, command=lambda _: self.draw_playhead(self.time_slider.get() * self.width / 100, True))
         self.time_slider.pack(side=tk.TOP, padx=5)
         
         self.show_playhead_line = tk.BooleanVar(value=True)
@@ -884,13 +885,17 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.settings_frame = tk.LabelFrame(self.bottom_pane, text="Settings")
         self.settings_frame.pack(side=tk.LEFT, padx=5, fill=tk.BOTH, expand=True)
         
-        # --- Volume Slider with Reset Button ---
+        # --- Thread-safe Volume Tracker ---
+        self.current_volume = 1.0 
+        
         vol_frame = tk.Frame(self.settings_frame)
         vol_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
-        self.volume_slider = tk.Scale(vol_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL, label="Volume")
+        
+        # Add the 'command' hook!
+        self.volume_slider = tk.Scale(vol_frame, from_=0.0, to=10.0, resolution=0.1, orient=tk.HORIZONTAL, label="Volume", command=self.update_volume_tracker)
         self.volume_slider.set(1.0)
         self.volume_slider.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        tk.Button(vol_frame, text="↺", font=("Arial", 13, "bold"), command=lambda: self.volume_slider.set(1.0)).pack(side=tk.RIGHT, padx=2, pady=(15, 0))
+        tk.Button(vol_frame, text="↺", font=("Arial", 10, "bold"), command=lambda: self.volume_slider.set(1.0)).pack(side=tk.RIGHT, padx=2, pady=(15, 0))
         
         # --- Speed Slider with Reset Button ---
         speed_frame = tk.Frame(self.settings_frame)
@@ -922,6 +927,10 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.playhead_triangle_id = None
         self.playhead_line_id = None
         self.draw_playhead(0) # Initialize at 0
+
+    def update_volume_tracker(self, val):
+        """Safely caches the UI slider so the background audio thread can read it without crashing Tkinter!"""
+        self.current_volume = float(val)
 
     def toggle_play_pause(self, event=None):
         """Toggles between Play and Pause states."""
@@ -1043,7 +1052,7 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         if valid_frames > 0:
             audio_chunk = self.cached_base_audio[self.playback_index : self.playback_index + valid_frames]
             
-            outdata[:valid_frames, 0] = np.clip(audio_chunk * self.volume_slider.get(), -1.0, 1.0)
+            outdata[:valid_frames, 0] = np.clip(audio_chunk * self.current_volume, -1.0, 1.0)
             
             if valid_frames < frames: outdata[valid_frames:, 0] = 0
             self.playback_index += valid_frames
@@ -1064,13 +1073,16 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
     def clear_overlay(self):
         """Clears the overlay matrix completely."""
         self.stop_audio()
-        self.undo_redo_counter += 1
-
-        self.overlay_matrix.fill(0.0)
-
-        if hasattr(self, "overlay_phase_matrix"):
+        self.clear_audio_cache()
+        
+        if hasattr(self, 'overlay_matrix'):
+            self.overlay_matrix.fill(0.0)
+        if hasattr(self, 'overlay_phase_matrix'):
             self.overlay_phase_matrix.fill(0.5)
-
+            
+        for attr in ['pristine_overlay_amp_matrix', 'pristine_overlay_phase_matrix', 'overlay_phase_is_edited']:
+            if hasattr(self, attr): delattr(self, attr)
+            
         self.has_overlay = False
         self.render_matrix_to_image()
 
@@ -1084,7 +1096,10 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
             
         self.root.after(15, self.update_playhead_loop)
 
-    def draw_playhead(self, x_pos):
+    def draw_playhead(self, x_pos, moved_time_slider=False):
+        if self.is_playing and moved_time_slider:
+            self.pause_audio()
+
         if self.playhead_triangle_id:
             self.canvas.delete(self.playhead_triangle_id)
         if self.playhead_line_id:
@@ -1093,7 +1108,11 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         # Convert Matrix X to UI X
         x1, _, x2, _ = self.get_crop_bounds()
         ui_x_pos = ((x_pos - x1) / (x2 - x1)) * self.ui_width
-        ui_x_pos += 1.45
+
+        if not self.is_playing:
+            ui_x_pos += 1.45
+        else:
+            ui_x_pos -= 3
                     
         if ui_x_pos < -20 or ui_x_pos > self.ui_width + 20:
             return
@@ -1179,35 +1198,50 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
     def swap_canvas_overlay(self):
         """Swaps the main canvas and the overlay matrices."""
         self.stop_audio()
+        self.clear_audio_cache()
         self.save_state()
         
-        # 1. Swap Amplitude Matrices
+        # 1. Swap Amp
         temp_amp = self.amp_matrix.copy()
-        if hasattr(self, 'overlay_matrix'):
-            self.amp_matrix = self.overlay_matrix.copy()
-        else:
-            self.amp_matrix = np.zeros((self.height, self.width), dtype=float)
-            
+        self.amp_matrix = self.overlay_matrix.copy() if hasattr(self, 'overlay_matrix') else np.zeros((self.height, self.width), dtype=float)
         self.overlay_matrix = temp_amp
         
-        # 2. Swap Phase Matrices
+        # 2. Swap Phase
         temp_phase = self.phase_matrix.copy()
-        if hasattr(self, 'overlay_phase_matrix'):
-            self.phase_matrix = self.overlay_phase_matrix.copy()
-        else:
-            self.phase_matrix = np.full((self.height, self.width), 0.5, dtype=float)
+        self.phase_matrix = self.overlay_phase_matrix.copy() if hasattr(self, 'overlay_phase_matrix') else np.full((self.height, self.width), 0.5, dtype=float)
         self.overlay_phase_matrix = temp_phase
         
-        # 3. Disconnect High-Def
-        for attr in ['pristine_amp_matrix', 'base_squashed_amp', 'pristine_phase_matrix']:
-            if hasattr(self, attr): delattr(self, attr)
-            
-        self.has_overlay = True
-        self.phase_is_edited = True
+        # 3. Swap High-Def Pristine Matrices Safely!
+        temp_pristine_amp = getattr(self, 'pristine_amp_matrix', None)
+        if hasattr(self, 'pristine_overlay_amp_matrix'):
+            self.pristine_amp_matrix = self.pristine_overlay_amp_matrix.copy()
+        elif hasattr(self, 'pristine_amp_matrix'):
+            delattr(self, 'pristine_amp_matrix')
+        if temp_pristine_amp is not None:
+            self.pristine_overlay_amp_matrix = temp_pristine_amp
+        elif hasattr(self, 'pristine_overlay_amp_matrix'):
+            delattr(self, 'pristine_overlay_amp_matrix')
 
-        if not np.any(self.overlay_matrix):
-            self.has_overlay = False
+        temp_pristine_phase = getattr(self, 'pristine_phase_matrix', None)
+        if hasattr(self, 'pristine_overlay_phase_matrix'):
+            self.pristine_phase_matrix = self.pristine_overlay_phase_matrix.copy()
+        elif hasattr(self, 'pristine_phase_matrix'):
+            delattr(self, 'pristine_phase_matrix')
+        if temp_pristine_phase is not None:
+            self.pristine_overlay_phase_matrix = temp_pristine_phase
+        elif hasattr(self, 'pristine_overlay_phase_matrix'):
+            delattr(self, 'pristine_overlay_phase_matrix')
+            
+        # 4. Swap the squashed base & Phase Edit Flags!
+        if hasattr(self, 'base_squashed_amp'):
+            delattr(self, 'base_squashed_amp')
+        self.base_squashed_amp = self.amp_matrix.copy()
         
+        temp_edited = getattr(self, 'phase_is_edited', False)
+        self.phase_is_edited = getattr(self, 'overlay_phase_is_edited', False)
+        self.overlay_phase_is_edited = temp_edited
+        
+        self.has_overlay = True
         self.render_matrix_to_image()
 
     def start_stroke(self, event):
@@ -1226,189 +1260,140 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.stop_audio()
         super().redo(event)
 
-    # def generate_ft_data(self):
-    #     """Synthesizes Audio. Uses Pristine HD Phase UNLESS you edited the phase matrix!"""
-    #     duration_seconds = self.canvas_duration_seconds 
-    #     sample_rate = self.canvas_sample_rate
-    #     NFFT = (self.height - 1) * 2 
-    #     ideal_step = NFFT // 2
-    #     total_samples = int(sample_rate * duration_seconds)
-        
-    #     required_width = max(2, total_samples // ideal_step)
-
-    #     is_editing_imported = hasattr(self, 'pristine_amp_matrix') and self.import_mode.get() == "edit"
-
-    #     if is_editing_imported:
-    #         required_width = self.pristine_amp_matrix.shape[1]
-        
-    #     # 1. PHASE ARCHITECTURE
-    #     if is_editing_imported and hasattr(self, 'pristine_phase_matrix') and not getattr(self, 'phase_is_edited', False):
-    #         # Pristine High-Def Bypass!
-    #         required_width = self.pristine_phase_matrix.shape[1]
-    #         final_phase_matrix = np.flipud(self.pristine_phase_matrix)
-    #     else:
-    #         # Grab from UI
-    #         if hasattr(self, "has_overlay") and self.has_overlay and self.import_mode.get() == "overlay":
-    #             ui_phase_normalized = self.overlay_phase_matrix
-    #         else:
-    #             ui_phase_normalized = self.phase_matrix
-                
-    #         ui_phase = (np.flipud(ui_phase_normalized) * 2 * np.pi) - np.pi
-            
-    #         if ui_phase.shape[1] != required_width:
-    #             pil_phase = Image.fromarray(ui_phase.astype(np.float32), mode="F")
-    #             pil_phase = pil_phase.resize((required_width, self.height), Image.Resampling.NEAREST)
-    #             final_phase_matrix = np.array(pil_phase)
-    #         else:
-    #             final_phase_matrix = ui_phase
-                
-    #     # 2. DELTA MAPPING AMPLITUDE
-    #     if is_editing_imported:
-    #         ui_delta = self.amp_matrix - getattr(self, 'base_squashed_amp')
-    #         if ui_delta.shape[1] != required_width:
-    #             pil_delta = Image.fromarray(ui_delta.astype(np.float32), mode="F")
-    #             pil_delta = pil_delta.resize((required_width, self.height), Image.Resampling.BILINEAR)
-    #             high_def_delta = np.array(pil_delta)
-    #         else:
-    #             high_def_delta = ui_delta
-                
-    #         audio_matrix = self.pristine_amp_matrix + high_def_delta
-    #         audio_matrix = np.clip(audio_matrix, 0.0, 1.0)
-            
-    #         # Delta-mapping residue prevents pure silence. We must hard-gate the erased pixels!
-    #         if self.amp_matrix.shape[1] != required_width:
-    #             pil_mask = Image.fromarray((self.amp_matrix == 0).astype(np.float32), mode="F")
-    #             pil_mask = pil_mask.resize((required_width, self.height), Image.Resampling.NEAREST)
-    #             hd_zero_mask = np.array(pil_mask) > 0.5
-    #         else:
-    #             hd_zero_mask = (self.amp_matrix == 0)
-                
-    #         audio_matrix[hd_zero_mask] = 0.0
-    #         # --------------------------------------
-            
-    #         audio_matrix = np.flipud(audio_matrix)
-    #     else:
-    #         audio_matrix = np.flipud(self.amp_matrix)
-    #         if audio_matrix.shape[1] != required_width:
-    #             pil_amp = Image.fromarray(audio_matrix.astype(np.float32), mode="F")
-    #             pil_amp = pil_amp.resize((required_width, self.height), Image.Resampling.BILINEAR)
-    #             audio_matrix = np.array(pil_amp)
-
-    #     if hasattr(self, 'original_max_val'):
-    #         audio_matrix *= self.original_max_val
-                
-    #     times = np.linspace(0, duration_seconds, required_width)
-    #     freqs = np.linspace(0, sample_rate / 2, self.height)
-        
-    #     return FourierTransformData(
-    #         amp_matrix=audio_matrix, phase_matrix=final_phase_matrix,
-    #         freqs=freqs, times=times, sample_rate=sample_rate,
-    #         NFFT=NFFT, noverlap=max(0, NFFT - ideal_step), useHanning=True
-    #     )
-
     def generate_ft_data(self):
-        """Synthesizes Audio based on the selected Audio Source Dropdown."""
-        duration_seconds = self.canvas_duration_seconds 
-        sample_rate = self.canvas_sample_rate
+        """Synthesizes Audio using Complex Vector Superposition."""
+        duration_seconds = getattr(self, 'canvas_duration_seconds', 5.0)
+        sample_rate = getattr(self, 'canvas_sample_rate', 44100)
         NFFT = (self.height - 1) * 2 
         ideal_step = NFFT // 2
         total_samples = int(sample_rate * duration_seconds)
-        
         required_width = max(2, total_samples // ideal_step)
 
-        is_editing_imported = hasattr(self, 'pristine_amp_matrix') and self.import_mode.get() == "edit"
-        has_overlay_matrix = hasattr(self, 'has_overlay') and self.has_overlay and self.import_mode.get() == "overlay"
+        is_editing_imported = hasattr(self, 'pristine_amp_matrix') and getattr(self.import_mode, 'get', lambda: "edit")() == "edit"
+        has_overlay_matrix = hasattr(self, 'has_overlay') and self.has_overlay
         
         if is_editing_imported:
             required_width = self.pristine_amp_matrix.shape[1]
             
         src = getattr(self, 'playback_source', tk.StringVar(value="Both (Mix)")).get()
+        max_val = getattr(self, 'original_max_val', float(self.height - 1))
+
+        times = np.arange(required_width) * (ideal_step / sample_rate)
+        freqs = np.linspace(0, sample_rate / 2, self.height)
+        phase_advance = 2 * np.pi * freqs[:, np.newaxis] * times[np.newaxis, :]
+
+        # --- 1. EXTRACT MAIN CANVAS COMPLEX SIGNAL ---
+        if is_editing_imported:
+            ui_delta = self.amp_matrix - getattr(self, 'base_squashed_amp')
+            if ui_delta.shape[1] != required_width:
+                pil_delta = Image.fromarray(ui_delta.astype(np.float32), mode="F")
+                pil_delta = pil_delta.resize((required_width, self.height), Image.Resampling.BILINEAR)
+                high_def_delta = np.array(pil_delta)
+            else:
+                high_def_delta = ui_delta
+                
+            main_amp = self.pristine_amp_matrix + high_def_delta
+            main_amp = np.clip(main_amp, 0.0, 1.0)
+            main_amp = np.flipud(main_amp) * max_val
+            
+            if hasattr(self, 'pristine_phase_matrix') and not getattr(self, 'phase_is_edited', False):
+                main_phase = np.flipud(self.pristine_phase_matrix)
+            else:
+                ui_phase = (np.flipud(self.phase_matrix) * 2 * np.pi) - np.pi
+                if ui_phase.shape[1] != required_width:
+                    Z_ui = np.exp(1j * ui_phase)
+                    real_pil = Image.fromarray(np.real(Z_ui).astype(np.float32), mode="F")
+                    imag_pil = Image.fromarray(np.imag(Z_ui).astype(np.float32), mode="F")
+                    real_res = np.array(real_pil.resize((required_width, self.height), Image.Resampling.BILINEAR))
+                    imag_res = np.array(imag_pil.resize((required_width, self.height), Image.Resampling.BILINEAR))
+                    main_phase = np.angle(real_res + 1j * imag_res) + phase_advance
+                else:
+                    main_phase = ui_phase + phase_advance
+        else:
+            active_amp = np.flipud(self.amp_matrix)
+            if active_amp.shape[1] != required_width:
+                pil_amp = Image.fromarray(active_amp.astype(np.float32), mode="F")
+                pil_amp = pil_amp.resize((required_width, self.height), Image.Resampling.BILINEAR)
+                main_amp = np.array(pil_amp) * max_val
+            else:
+                main_amp = active_amp * max_val
+                
+            ui_phase = (np.flipud(self.phase_matrix) * 2 * np.pi) - np.pi
+            if ui_phase.shape[1] != required_width:
+                Z_ui = np.exp(1j * ui_phase)
+                real_pil = Image.fromarray(np.real(Z_ui).astype(np.float32), mode="F")
+                imag_pil = Image.fromarray(np.imag(Z_ui).astype(np.float32), mode="F")
+                real_res = np.array(real_pil.resize((required_width, self.height), Image.Resampling.BILINEAR))
+                imag_res = np.array(imag_pil.resize((required_width, self.height), Image.Resampling.BILINEAR))
+                main_phase = np.angle(real_res + 1j * imag_res) + phase_advance
+            else:
+                main_phase = ui_phase + phase_advance
+
+        # --- 2. EXTRACT OVERLAY COMPLEX SIGNAL ---
+        overlay_amp = np.zeros((self.height, required_width))
+        overlay_phase = phase_advance.copy()
         
-        # --- 1. ROUTE THE AMPLITUDE AND PHASE MATRICES ---
-        active_amp = None
-        active_phase_ui = None
-        pristine_phase_override = None
-        
+        if has_overlay_matrix:
+            if hasattr(self, 'pristine_overlay_amp_matrix') and not getattr(self, 'overlay_phase_is_edited', False):
+                hd_ov_amp = self.pristine_overlay_amp_matrix
+                if hd_ov_amp.shape[1] != required_width:
+                    pil_ov = Image.fromarray(hd_ov_amp.astype(np.float32), mode="F")
+                    pil_ov = pil_ov.resize((required_width, self.height), Image.Resampling.BILINEAR)
+                    overlay_amp = np.flipud(np.array(pil_ov)) * max_val
+                else:
+                    overlay_amp = np.flipud(hd_ov_amp) * max_val
+                    
+                hd_ov_phase = np.flipud(self.pristine_overlay_phase_matrix)
+                if hd_ov_phase.shape[1] != required_width:
+                    Z_ov = np.exp(1j * hd_ov_phase)
+                    real_pil = Image.fromarray(np.real(Z_ov).astype(np.float32), mode="F")
+                    imag_pil = Image.fromarray(np.imag(Z_ov).astype(np.float32), mode="F")
+                    real_res = np.array(real_pil.resize((required_width, self.height), Image.Resampling.BILINEAR))
+                    imag_res = np.array(imag_pil.resize((required_width, self.height), Image.Resampling.BILINEAR))
+                    overlay_phase = np.angle(real_res + 1j * imag_res)
+                else:
+                    overlay_phase = hd_ov_phase
+            else:
+                ui_ov = np.flipud(self.overlay_matrix)
+                if ui_ov.shape[1] != required_width:
+                    pil_ov = Image.fromarray(ui_ov.astype(np.float32), mode="F")
+                    pil_ov = pil_ov.resize((required_width, self.height), Image.Resampling.BILINEAR)
+                    overlay_amp = np.array(pil_ov) * max_val
+                else:
+                    overlay_amp = ui_ov * max_val
+                    
+                ui_ph = (np.flipud(self.overlay_phase_matrix) * 2 * np.pi) - np.pi
+                if ui_ph.shape[1] != required_width:
+                    Z_ui = np.exp(1j * ui_ph)
+                    real_pil = Image.fromarray(np.real(Z_ui).astype(np.float32), mode="F")
+                    imag_pil = Image.fromarray(np.imag(Z_ui).astype(np.float32), mode="F")
+                    real_res = np.array(real_pil.resize((required_width, self.height), Image.Resampling.BILINEAR))
+                    imag_res = np.array(imag_pil.resize((required_width, self.height), Image.Resampling.BILINEAR))
+                    overlay_phase = np.angle(real_res + 1j * imag_res) + phase_advance
+                else:
+                    overlay_phase = ui_ph + phase_advance
+
+        # --- 3. MULTIPLEXER (COMPLEX SUPERPOSITION) ---
         if src == "Overlay / Original":
             if is_editing_imported:
-                active_amp = self.pristine_amp_matrix.copy()
-                pristine_phase_override = np.flipud(self.pristine_phase_matrix)
-            elif has_overlay_matrix:
-                active_amp = np.flipud(self.overlay_matrix)
-                active_phase_ui = self.overlay_phase_matrix
-            else: # Blank canvas fallback
-                active_amp = np.zeros((self.height, required_width))
+                audio_matrix = np.flipud(self.pristine_amp_matrix) * max_val
+                final_phase_matrix = np.flipud(self.pristine_phase_matrix)
+            else:
+                audio_matrix = overlay_amp
+                final_phase_matrix = overlay_phase
                 
         elif src == "Main Canvas":
-            active_amp = np.flipud(self.amp_matrix)
-            active_phase_ui = self.phase_matrix
+            audio_matrix = main_amp
+            final_phase_matrix = main_phase
             
         else: # Both (Mix)
-            if is_editing_imported:
-                ui_delta = self.amp_matrix - getattr(self, 'base_squashed_amp')
-                if ui_delta.shape[1] != required_width:
-                    pil_delta = Image.fromarray(ui_delta.astype(np.float32), mode="F")
-                    pil_delta = pil_delta.resize((required_width, self.height), Image.Resampling.BILINEAR)
-                    high_def_delta = np.array(pil_delta)
-                else:
-                    high_def_delta = ui_delta
-                    
-                mixed_amp = self.pristine_amp_matrix + high_def_delta
-                mixed_amp = np.clip(mixed_amp, 0.0, 1.0)
-                
-                # Eraser Hard-Gate
-                if self.amp_matrix.shape[1] != required_width:
-                    pil_mask = Image.fromarray((self.amp_matrix == 0).astype(np.float32), mode="F")
-                    pil_mask = pil_mask.resize((required_width, self.height), Image.Resampling.NEAREST)
-                    hd_zero_mask = np.array(pil_mask) > 0.5
-                else:
-                    hd_zero_mask = (self.amp_matrix == 0)
-                    
-                mixed_amp[hd_zero_mask] = 0.0
-                active_amp = np.flipud(mixed_amp)
-                
-                if hasattr(self, 'pristine_phase_matrix') and not getattr(self, 'phase_is_edited', False):
-                    pristine_phase_override = np.flipud(self.pristine_phase_matrix)
-                else:
-                    active_phase_ui = self.phase_matrix
-            else:
-                mixed_amp = self.amp_matrix.copy()
-                if has_overlay_matrix:
-                    mixed_amp = np.clip(mixed_amp + self.overlay_matrix, 0.0, 1.0)
-                active_amp = np.flipud(mixed_amp)
-                active_phase_ui = self.phase_matrix
-                
-        # --- 2. RESIZE AND SCALE AMPLITUDE ---
-        if active_amp.shape[1] != required_width:
-            pil_amp = Image.fromarray(active_amp.astype(np.float32), mode="F")
-            pil_amp = pil_amp.resize((required_width, self.height), Image.Resampling.BILINEAR)
-            audio_matrix = np.array(pil_amp)
-        else:
-            audio_matrix = active_amp
+            Z_main = main_amp * np.exp(1j * main_phase)
+            Z_overlay = overlay_amp * np.exp(1j * overlay_phase)
+            Z_mix = Z_main + Z_overlay
             
-        # Restore pure physical magnitude
-        if hasattr(self, 'original_max_val'):
-            audio_matrix *= self.original_max_val
-            
-        # --- 3. RESIZE AND FORMAT PHASE ---
-        if pristine_phase_override is not None:
-            final_phase_matrix = pristine_phase_override
-        else:
-            if active_phase_ui is None:
-                active_phase_ui = np.full((self.height, required_width), 0.5)
-                
-            ui_phase = (np.flipud(active_phase_ui) * 2 * np.pi) - np.pi
-            
-            if ui_phase.shape[1] != required_width:
-                pil_phase = Image.fromarray(ui_phase.astype(np.float32), mode="F")
-                pil_phase = pil_phase.resize((required_width, self.height), Image.Resampling.NEAREST)
-                final_phase_matrix = np.array(pil_phase)
-            else:
-                final_phase_matrix = ui_phase
+            audio_matrix = np.abs(Z_mix)
+            final_phase_matrix = np.angle(Z_mix)
 
-        times = np.linspace(0, duration_seconds, required_width)
-        freqs = np.linspace(0, sample_rate / 2, self.height)
-        
         return FourierTransformData(
             amp_matrix=audio_matrix, phase_matrix=final_phase_matrix,
             freqs=freqs, times=times, sample_rate=sample_rate,
@@ -1418,37 +1403,41 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
     def apply_phase_generator(self):
         """Mathematically generates a phase mapping across the UI."""
         self.stop_audio()
-        self.undo_redo_counter += 1
+        self.clear_audio_cache()
         self.save_state()
         mode = self.phase_gen_mode.get()
         self.phase_is_edited = True
         
         if mode == "0 Phase":
             self.phase_matrix.fill(0.5)
-
         elif mode == "Random Phase":
             self.phase_matrix = np.random.uniform(0.0, 1.0, size=self.phase_matrix.shape)
-
         elif mode == "Saved Phase" and hasattr(self, 'pristine_phase_matrix'):
-            normalized_phase = (self.pristine_phase_matrix + np.pi) / (2 * np.pi)
-
+            sr = getattr(self, 'canvas_sample_rate', 44100)
+            ideal_step = ((self.height - 1) * 2) // 2
+            required_width = self.pristine_phase_matrix.shape[1]
+            
+            times = np.arange(required_width) * (ideal_step / sr)
+            freqs = np.linspace(0, sr / 2, self.height)
+            
+            phase_advance = 2 * np.pi * freqs[:, np.newaxis] * times[np.newaxis, :]
+            
+            # Flip the math so 0 Hz matches the Pristine UI orientation!
+            phase_advance_ui = np.flipud(phase_advance)
+            
+            pure_offset = self.pristine_phase_matrix - phase_advance_ui
+            pure_offset = (pure_offset + np.pi) % (2 * np.pi) - np.pi
+            
+            normalized_phase = (pure_offset + np.pi) / (2 * np.pi)
+            
             pil_phase = Image.fromarray(normalized_phase.astype(np.float32), mode="F")
             pil_phase = pil_phase.resize((self.width, self.height), Image.Resampling.NEAREST)
             self.phase_matrix = np.array(pil_phase)
-            # Re-lock the engine to High-Def!
-            self.phase_is_edited = False 
-
+            self.phase_is_edited = False
         else: # Semi-Random
-            duration = getattr(self, 'canvas_duration_seconds', 5.0)
-            sr = getattr(self, 'canvas_sample_rate', 44100)
-            times = np.linspace(0, duration, self.width)
-            freqs = np.linspace(0, sr / 2, self.height)
-            
-            randomness_factor = 0.5
-            semi_phase = 2 * np.pi * freqs[:, np.newaxis] * times[np.newaxis, :]
-            semi_phase += np.random.uniform(-np.pi, np.pi, size=semi_phase.shape) * randomness_factor
-            semi_phase = (semi_phase + np.pi) % (2 * np.pi) - np.pi
-            self.phase_matrix = (np.flipud(semi_phase) + np.pi) / (2 * np.pi)
+            # --- Semi-Random is now just scaled random offsets! ---
+            semi_offset = np.random.uniform(-np.pi, np.pi, size=self.phase_matrix.shape) * 0.5
+            self.phase_matrix = (semi_offset + np.pi) / (2 * np.pi)
 
         self.render_matrix_to_image()
 
@@ -1555,7 +1544,6 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
                 img = img.resize((self.width, self.height), Image.Resampling.BILINEAR)
                 
                 final_amp_matrix = np.array(img).astype(float) / 255.0
-                imported_amp = final_amp_matrix.copy()
                 self.original_max_val = float(NFFT / 2)
                 
                 # PNGs don't have audio waves, so manually generate a scaled random phase!
@@ -1609,22 +1597,38 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
 
             # 2. Normalize and Prepare the Matrix
             if ext not in ["png", "jpg", "jpeg"]:
-                imported_amp = ft_data.amp_matrix
-                self.original_max_val = np.max(imported_amp)
+                self.canvas_sample_rate = int(ft_data.sample_rate)
+                if true_duration:
+                    self.canvas_duration_seconds = float(true_duration)
+                elif len(ft_data.times) > 1:
+                    self.canvas_duration_seconds = float(ft_data.times[-1] - ft_data.times[0])
 
+                imported_amp = ft_data.amp_matrix
+                
+                self.original_max_val = np.max(imported_amp)
                 if self.original_max_val > 0:
                     imported_amp = imported_amp / self.original_max_val
                     
                 imported_amp = np.flipud(imported_amp)
                 
-                # --- Map imported Phase from [-pi, pi] to [0, 1] ---
+                # --- FIX 4: Strip Carrier Advance to map STFT Phase to UI Offsets ---
                 imported_phase_raw = np.flipud(ft_data.phase_matrix)
-                imported_phase = (imported_phase_raw + np.pi) / (2 * np.pi)
+                
+                required_width = imported_phase_raw.shape[1]
+                times = np.arange(required_width) * (ideal_step / self.canvas_sample_rate)
+                freqs = np.linspace(0, self.canvas_sample_rate / 2, self.height)
+                
+                phase_advance = 2 * np.pi * freqs[:, np.newaxis] * times[np.newaxis, :]
+                phase_advance_ui = np.flipud(phase_advance)
+                
+                pure_offset = imported_phase_raw - phase_advance_ui
+                pure_offset = (pure_offset + np.pi) % (2 * np.pi) - np.pi
+                imported_phase = (pure_offset + np.pi) / (2 * np.pi)
 
-                # Squash for Amplitude UI
-                pil_img = Image.fromarray((imported_amp * 255).astype(np.uint8))
+                # --- FIX 1: Squash for UI using 32-bit floats to prevent Noise Gating! ---
+                pil_img = Image.fromarray(imported_amp.astype(np.float32), mode="F")
                 pil_img = pil_img.resize((self.width, self.height), Image.Resampling.BILINEAR)
-                final_amp_matrix = np.array(pil_img).astype(float) / 255.0
+                final_amp_matrix = np.array(pil_img)
                 
                 # Squash safely for Phase UI (Must use NEAREST)
                 pil_phase = Image.fromarray(imported_phase.astype(np.float32), mode="F")
@@ -1638,22 +1642,19 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
                 self.amp_matrix = final_amp_matrix.copy()
                 self.phase_matrix = final_phase_matrix.copy()
                 
-                self.pristine_amp_matrix = imported_amp.copy()
-                if ext not in ["png", "jpg", "jpeg"]:
-                    self.pristine_phase_matrix = imported_phase_raw.copy()
                 self.base_squashed_amp = final_amp_matrix.copy()
+                if ext not in ["png", "jpg", "jpeg"]:
+                    self.pristine_amp_matrix = imported_amp.copy()
+                    self.pristine_phase_matrix = imported_phase_raw.copy()
             elif self.import_mode.get() == "overlay":
                 self.overlay_matrix = final_amp_matrix
                 self.overlay_phase_matrix = final_phase_matrix.copy()
-                self.has_overlay = True
 
-            # --- 5. Sync the exact Physics ---
-            if ext != "png":
-                self.canvas_sample_rate = int(ft_data.sample_rate)
-                if true_duration:
-                    self.canvas_duration_seconds = float(true_duration)
-                elif len(ft_data.times) > 1:
-                    self.canvas_duration_seconds = float(ft_data.times[-1] - ft_data.times[0])
+                if ext not in ["png", "jpg", "jpeg"]:
+                    self.pristine_overlay_amp_matrix = imported_amp.copy()
+                    self.pristine_overlay_phase_matrix = imported_phase_raw.copy()
+
+                self.has_overlay = True
 
             self.cached_base_audio = None
 
@@ -1673,5 +1674,5 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
 if __name__ == "__main__":
     root = tk.Tk()
     # app = DrawingProgram(root)
-    app = SpectrogramSynthesizer(root, ui_width=2000, ui_height=1000, res_width=2000, res_height=513)
+    app = SpectrogramSynthesizer(root, ui_width=2000, ui_height=1000, res_width=2000, res_height =513)
     root.mainloop()

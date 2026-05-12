@@ -393,11 +393,25 @@ class AudioSignal:
 
         true_NFFT = ft_data.get("NFFT", NFFT)
         true_noverlap = ft_data.get("noverlap", noverlap)
-        
+
         step = true_NFFT - true_noverlap
         total_samples = int((len(time_starts) - 1) * step + true_NFFT)
         
         combined_amplitudes = np.zeros(total_samples)
+
+        usingHanning = ft_data.get("useHanning", True)
+
+        synthesis_window = np.hanning(true_NFFT) if usingHanning else np.ones(true_NFFT)
+        window_squared = synthesis_window ** 2
+        
+        # Pre-calculate the WOLA envelope to prevent warbling!
+        window_sum = np.zeros(total_samples)
+        for time_idx in range(len(time_starts)):
+            start_idx = int(time_idx * step)
+            end_idx = start_idx + true_NFFT
+            window_sum[start_idx:end_idx] += window_squared
+            
+        window_sum[window_sum < 1e-3] = 1.0
 
         for time_idx in range(len(time_starts)):
             current_amps = amp_matrix[time_idx]
@@ -415,12 +429,14 @@ class AudioSignal:
                 wave = current_amps[freq_idx] * np.cos(2 * np.pi * freqs[freq_idx] * local_time + current_phases[freq_idx])
                 chunk_wave += wave
             
-            chunk_wave /= true_NFFT
+            chunk_wave = (chunk_wave / true_NFFT) * synthesis_window
         
             start_idx = int(time_idx * step)
             end_idx = start_idx + true_NFFT
 
             combined_amplitudes[start_idx:end_idx] += chunk_wave
+        
+        combined_amplitudes /= window_sum
 
         output_time = np.arange(total_samples) / true_sr
         
@@ -465,6 +481,20 @@ class AudioSignal:
         combined_amplitudes = np.zeros(total_samples)
         last_yielded_sample = 0
 
+        usingHanning = ft_data.get("useHanning", True)
+
+        synthesis_window = np.hanning(true_NFFT) if usingHanning else np.ones(true_NFFT)
+        window_squared = synthesis_window ** 2
+        
+        # Pre-calculate the WOLA envelope for the stream!
+        window_sum = np.zeros(total_samples)
+        for time_idx in range(len(time_starts)):
+            start_idx = int(time_idx * step)
+            end_idx = start_idx + true_NFFT
+            window_sum[start_idx:end_idx] += window_squared
+            
+        window_sum[window_sum < 1e-3] = 1.0
+
         for time_idx in range(len(time_starts)):
             current_amps = amp_matrix[time_idx]
             if mode == 0:
@@ -481,7 +511,7 @@ class AudioSignal:
                 wave = current_amps[freq_idx] * np.cos(2 * np.pi * freqs[freq_idx] * local_time + current_phases[freq_idx])
                 chunk_wave += wave
             
-            chunk_wave /= true_NFFT
+            chunk_wave = (chunk_wave / true_NFFT) * synthesis_window
         
             start_idx = int(time_idx * step)
             end_idx = start_idx + true_NFFT
@@ -490,11 +520,11 @@ class AudioSignal:
             
             if time_idx > 0 and time_idx % columns_per_chunk == 0:
                 safe_sample = int(time_idx * step)
-                safe_audio = combined_amplitudes[last_yielded_sample:safe_sample]
+                safe_audio = combined_amplitudes[last_yielded_sample:safe_sample] / window_sum[last_yielded_sample:safe_sample]
                 yield safe_audio
                 last_yielded_sample = safe_sample
                 
-        safe_audio = combined_amplitudes[last_yielded_sample:]
+        safe_audio = combined_amplitudes[last_yielded_sample:] / window_sum[last_yielded_sample:]
         yield safe_audio
 
     def to_audio_file(self, output_name: str, use_absolute_path: bool = False) -> None:
@@ -1166,13 +1196,13 @@ def apply_ft_on_chunks(audio_data: pd.DataFrame | AudioSignal, ft_func: Callable
     freqs = np.fft.rfftfreq(NFFT, 1/sample_rate)
 
     return FourierTransformData(
-        amp_matrix.T,
-        phase_matrix.T,
-        freqs,
-        times,
-        sample_rate,
-        NFFT,
-        noverlap,
+        amp_matrix=amp_matrix.T,
+        phase_matrix=phase_matrix.T,
+        freqs=freqs,
+        times=times,
+        sample_rate=sample_rate,
+        NFFT=NFFT,
+        noverlap=noverlap,
         useHanning=useHanning,
     )
 
