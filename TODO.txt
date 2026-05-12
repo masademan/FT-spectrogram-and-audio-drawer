@@ -2,10 +2,9 @@ FIX NOW:
 N/A
 
 DrawingProgram TODO:
-make the canvas change size based on the size of the window
-
 be able to select pixels and then shift them, along the time, frequency, or both axes, and if the data gets cutoff, just don't play or export it
     have a mode selection between drawing and selecting
+
 allow for different layers, with a menu and checkboxs for enabling or disabling different layers, as well as naming capabilities
     and extension for SpectrogramSynthesizer, make it so that the layers act as one canvas, and can be heard separately or together with the overlay
     also, only the visible layers should be audible

@@ -61,38 +61,38 @@ class AudioDrawingProgram:
         self.top_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
         # --- THE CENTERING WRAPPER ---
-        # This invisible frame expands to fill the screen, but keeps its contents tightly centered!
         self.center_wrapper = tk.Frame(self.top_pane)
-        self.center_wrapper.pack(expand=True) 
+        self.center_wrapper.pack(expand=True, fill=tk.BOTH) 
 
-        # 1. CANVAS WORKSPACE (Left)
-        # Parent is now center_wrapper, and we removed 'expand=True' so it doesn't push the tools away!
+        # By packing this first to the RIGHT, Tkinter permanently protects its width from getting squished.
+        self.drawing_tools_pane = tk.Frame(self.center_wrapper)
+        self.drawing_tools_pane.pack(side=tk.RIGHT, fill=tk.Y, padx=(15, 0))
+
+        # Now the canvas will politely expand only into the leftover space!
         self.canvas_pane = tk.Frame(self.center_wrapper)
-        self.canvas_pane.pack(side=tk.LEFT, padx=(0, 15)) 
+        self.canvas_pane.pack(side=tk.LEFT, fill=tk.BOTH, expand=True) 
 
         self.workspace_frame = tk.Frame(self.canvas_pane)
-        self.workspace_frame.pack(pady=10, anchor=tk.N)
+        self.workspace_frame.pack(pady=10, fill=tk.BOTH, expand=True)
         
-        # Y-Axis (Uses UI height)
-        self.y_axis_canvas = tk.Canvas(self.workspace_frame, width=80, height=self.ui_height, bg=root.cget("bg"), highlightthickness=0)
+        self.workspace_frame.rowconfigure(0, weight=1)
+        self.workspace_frame.columnconfigure(1, weight=1)
+        
+        # Y-Axis 
+        self.y_axis_canvas = tk.Canvas(self.workspace_frame, width=80, bg=root.cget("bg"), highlightthickness=0)
         self.y_axis_canvas.grid(row=0, column=0, sticky="ns")
         
-        # Main Drawing Board (Uses UI dimensions)
+        # Main Drawing Board 
         self.canvas = tk.Canvas(self.workspace_frame, width=self.ui_width, height=self.ui_height, bg="black", cursor="crosshair")
-        self.canvas.grid(row=0, column=1)
+        self.canvas.grid(row=0, column=1, sticky="nsew")
         
-        # X-Axis (Uses UI width)
-        self.x_axis_canvas = tk.Canvas(self.workspace_frame, width=self.ui_width, height=30, bg=root.cget("bg"), highlightthickness=0)
+        # X-Axis 
+        self.x_axis_canvas = tk.Canvas(self.workspace_frame, height=30, bg=root.cget("bg"), highlightthickness=0)
         self.x_axis_canvas.grid(row=1, column=1, sticky="ew")
 
-        # --- Live Coordinate Tracker ---
+        # Live Coordinate Tracker
         self.coords_label = tk.Label(self.workspace_frame, text="-- s | -- Hz", font=("Arial", 10), fg="gray")
         self.coords_label.grid(row=2, column=1, sticky="e", pady=(0, 5))
-
-        # 2. DRAWING TOOLS SIDEBAR (Right)
-        # Parent is now center_wrapper, and side=tk.LEFT makes it permanently hug the Canvas!
-        self.drawing_tools_pane = tk.Frame(self.center_wrapper)
-        self.drawing_tools_pane.pack(side=tk.LEFT, fill=tk.Y)
         
         # --- PAN & ZOOM STATE VARIABLES ---
         self.zoom = 1.0
@@ -247,10 +247,23 @@ class AudioDrawingProgram:
         self.cmap_dropdown.bind("<<ComboboxSelected>>", self.change_colormap)
         self.canvas.bind("<Motion>", self.hover, add="+") # Fires when moving WITHOUT clicking
         self.canvas.bind("<Leave>", self.hide_brush_outline, add="+") # Fires when mouse leaves the canvas
+        self.canvas.bind("<Configure>", self.on_canvas_resize)
 
         self.change_colormap()
 
         self.request_render()
+
+    def on_canvas_resize(self, event):
+        """Dynamically updates the UI dimensions when the window is resized!"""
+        # Ignore spurious microscopic events from Tkinter initializing
+        if event.width > 50 and event.height > 50:
+            # Only trigger a heavy re-render if the size actually changed
+            if self.ui_width != event.width or self.ui_height != event.height:
+                self.ui_width = event.width
+                self.ui_height = event.height
+                
+                # Render the canvas at the new size!
+                self.request_render()
 
     def request_render(self):
         """Caps the heavy rendering process to ~60 FPS to prevent GUI lag!"""
@@ -906,6 +919,10 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.bottom_pane = tk.Frame(self.master_frame)
         self.bottom_pane.pack(side=tk.BOTTOM, fill=tk.X, pady=10)
         
+        # Unpack and repack the top pane so the bottom pane gets layout priority!
+        self.top_pane.pack_forget()
+        self.top_pane.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+        
         # 1. FILE I/O & OVERLAY FRAME
         self.io_frame = tk.LabelFrame(self.bottom_pane, text="File I/O & Overlay")
         self.io_frame.pack(side=tk.LEFT, padx=5, fill=tk.BOTH, expand=True)
@@ -917,24 +934,33 @@ class SpectrogramSynthesizer(AudioDrawingProgram):
         self.root.bind("<Control-s>", self.save_file)
         
         self.import_mode = tk.StringVar(value="edit")
-        tk.Radiobutton(self.io_frame, text="Import to Edit", variable=self.import_mode, value="edit", command=self.request_render).pack(side=tk.TOP, anchor=tk.W)
-        tk.Radiobutton(self.io_frame, text="Import as Overlay", variable=self.import_mode, value="overlay", command=self.request_render).pack(side=tk.TOP, anchor=tk.W)
         
-        # --- View & Trace Toggles ---
+        import_frame = tk.Frame(self.io_frame)
+        import_frame.pack(side=tk.TOP, fill=tk.X, pady=(2, 0))
+        tk.Radiobutton(import_frame, text="Import to Edit", variable=self.import_mode, value="edit", command=self.request_render).pack(side=tk.LEFT, padx=2)
+        tk.Radiobutton(import_frame, text="Import as Overlay", variable=self.import_mode, value="overlay", command=self.request_render).pack(side=tk.LEFT, padx=2)
+        
+        # --- Group the View & Trace Toggles horizontally ---
+        overlay_toggles_frame = tk.Frame(self.io_frame)
+        overlay_toggles_frame.pack(side=tk.TOP, fill=tk.X, pady=(0, 2))
+        
         self.show_overlay = tk.BooleanVar(value=True)
-        tk.Checkbutton(self.io_frame, text="Show Overlay", variable=self.show_overlay, command=self.request_render).pack(side=tk.TOP, anchor=tk.W)
+        tk.Checkbutton(overlay_toggles_frame, text="Show Overlay", variable=self.show_overlay, command=self.request_render).pack(side=tk.LEFT, padx=2)
 
         self.draw_in_red = tk.BooleanVar(value=True)
-        tk.Checkbutton(self.io_frame, text="Red Draw Mode", variable=self.draw_in_red, command=self.request_render).pack(side=tk.TOP, anchor=tk.W)
+        tk.Checkbutton(overlay_toggles_frame, text="Red Draw Mode", variable=self.draw_in_red, command=self.request_render).pack(side=tk.LEFT, padx=2)
+        
+        # Note: We removed the 'label' argument from tk.Scale so it fits neatly in the row!
+        tk.Label(overlay_toggles_frame, text="Opacity:").pack(side=tk.LEFT, padx=(10, 0))
+        self.overlay_opacity = tk.Scale(overlay_toggles_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL, length=200, command=lambda _: self.request_render())
+        self.overlay_opacity.set(0.4)
+        self.overlay_opacity.pack(side=tk.LEFT, padx=0)
         
         tk.Button(self.io_frame, text="🗑 Clear Overlay", bg="#ffcccc", command=self.clear_overlay).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
-
-        # --- Swap Canvas & Overlay Button ---
-        tk.Button(self.io_frame, text="🔄 Swap Canvas/Overlay", command=self.swap_canvas_overlay).pack(side=tk.TOP, fill=tk.X, padx=5, pady=2)
         
-        self.overlay_opacity = tk.Scale(self.io_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL, label="Overlay Opacity", command=lambda _: self.request_render())
-        self.overlay_opacity.set(0.4)
-        self.overlay_opacity.pack(side=tk.TOP, padx=5)
+        # self.overlay_opacity = tk.Scale(self.io_frame, from_=0.0, to=1.0, resolution=0.01, orient=tk.HORIZONTAL, label="Overlay Opacity", command=lambda _: self.request_render())
+        # self.overlay_opacity.set(0.4)
+        # self.overlay_opacity.pack(side=tk.TOP, padx=5)
 
         view_top_frame = tk.Frame(self.view_frame)
         view_top_frame.pack(side=tk.TOP, fill=tk.X)
